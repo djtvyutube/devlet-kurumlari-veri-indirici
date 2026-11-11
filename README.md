@@ -50,7 +50,7 @@ Projeyi çalıştırmadan önce sisteminizde Python 3.8 veya üzeri bir sürüm�
 
 1. Depoyu yerel ortamınıza klonlayın:
    ```bash
-   git clone https://github.com/KULLANICI_ADI/devlet-kurumlari-veri-indirici.git
+   git clone https://github.com/djtvyutube/devlet-kurumlari-veri-indirici.git
    cd devlet-kurumlari-veri-indirici
    ```
 

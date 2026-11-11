@@ -1,0 +1,33 @@
+# Python ortam ve önbellek dosyaları
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# İndirilen veri klasörleri ve arşiv çıktıları
+aymjson/
+indirilen_pdfler/
+indirilen_pdf ler/
+faaliyetler/
+danistay_detay_arsiv/
+danistay_arsiv_duzenli/
+yargitayjson/
+yargitay2020/
+yargitay_*/
+
+# Durum takip veritabanları ve durum dosyaları
+archive_state.db
+ilerleme_durumu.json
+durum_detay.json
+
+# IDE ve işletim sistemi dosyaları
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

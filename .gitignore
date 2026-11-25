@@ -12,17 +12,31 @@ venv/
 aymjson/
 indirilen_pdfler/
 indirilen_pdf ler/
+indirilen_raporlar/
 faaliyetler/
+faaliyet_raporlari/
+danistay_arsiv/
 danistay_detay_arsiv/
 danistay_arsiv_duzenli/
+danistay_*/
+yargitay_arsiv/
 yargitayjson/
 yargitay2020/
 yargitay_*/
+mevzuat_arsiv/
+mevzuat_*/
 
-# Durum takip veritabanları ve durum dosyaları
+# Durum takip veritabanları, loglar ve sertifika dosyaları
 archive_state.db
+archive_state.db-journal
+archive_state.db-wal
 ilerleme_durumu.json
+ilerleme_durumu.json.tmp
 durum_detay.json
+manifest.jsonl
+fetch_log.jsonl
+ca_bundle.pem
+*.part
 
 # IDE ve işletim sistemi dosyaları
 .vscode/

@@ -1,48 +1,54 @@
 # Devlet Kurumları Veri İndirici
 
-Türkiye Cumhuriyeti yargı organları (Anayasa Mahkemesi, Danıştay, Yargıtay) ve kamu denetim kurumlarının (Sayıştay vb.) web portallarından karar metinlerini, emsal kararları ve kurumsal raporları toplu olarak çekmek, temizlemek ve yapılandırılmış formatta yerel diske arşivlemek üzere geliştirilmiş veri toplama araç setidir.
+Türkiye Cumhuriyeti yüksek yargı organları (**Anayasa Mahkemesi, Danıştay, Yargıtay**), **Cumhurbaşkanlığı Mevzuat Bilgi Sistemi** (`mevzuat.gov.tr`) ve kamu denetim kurumlarının (**Sayıştay** vb.) resmi web portallarından ve REST API'lerinden yargı kararlarını, mevzuat metinlerini ve kurumsal raporları toplu olarak çekmek ve yerel diske arşivlemek üzere geliştirilmiş veri toplama araç setidir.
 
 ## Projenin Amacı ve Kapsamı
 
-Hukuk teknolojileri (LegalTech), yapay zeka/büyük dil modelleri (LLM) eğitimi, akademik çalışmalar veya yerel arşivleme amacıyla kamuya açık yargı kararlarının düzenli ve kesintisiz şekilde toplanmasını hedefler. 
+Hukuk teknolojileri (LegalTech), yapay zeka / büyük dil modelleri (LLM) eğitimi, akademik araştırmalar ve yerel arşivleme amacıyla kamuya açık yargı kararlarının, mevzuatların ve kamu raporlarının düzenli, kesintisiz ve **veri bütünlüğü bozulmadan (ham API yanıtlarıyla)** toplanmasını hedefler.
 
-Tüm modüller, yüksek hacimli indirme işlemlerinde sunucu yükünü dengede tutacak hız sınırlamaları (rate limit yönetimi), kesintiye uğrandığında kalınan yerden devam edebilme mekanizmaları ve mükerrer kayıtları eleyen önbellekleme sistemleriyle tasarlanmıştır.
+Tüm modüller; yüksek hacimli indirme işlemlerinde sunucu yükünü dengede tutacak hız sınırlamaları (rate limit / WAF yönetimi), kesintiye uğrandığında kalınan yerden devam edebilme mekanizmaları (SQLite / JSON durum takibi), hatalı veya eksik kalan kayıtları sonradan kurtarma sistemleri ve mükerrer indirmeleri önleyen bellek/disk önbellekleme mimarisiyle tasarlanmıştır.
 
 ## Proje Yapısı
 
-```
+```text
 devlet-kurumlari-veri-indirici/
 │
 ├── ana_yasa_mahkemesi/
-│   ├── aym_indirici.py       # AYM Kararlar Bilgi Bankası API tabanlı indirme betiği
-│   └── README.md             # Modül dokümantasyonu ve detaylı çalışma mantığı
+│   ├── aym_indirici.py          # AYM Kararlar Bilgi Bankası REST API tabanlı günlük karar indirici
+│   ├── aym_hatali_indirici.py   # Hata veren / indirilemeyen AYM kararlarını kurtarma betiği
+│   └── README.md                # Modül dokümantasyonu ve API veri yapısı rehberi
 │
 ├── belge_indirici/
-│   ├── dosya_indirici.py     # Sayıştay ve kamu kurumları PDF rapor indirme aracı
-│   └── README.md             # Modül dokümantasyonu ve parametre rehberi
+│   ├── dosya_indirici.py        # Sayıştay ve kamu kurumları PDF rapor ve metadata indirme aracı
+│   └── README.md                # Modül dokümantasyonu ve CLI parametre rehberi
 │
 ├── danıştay/
-│   ├── danistay_kazima.py    # Danıştay arama portalı künye listesi çekici
-│   ├── danistay_indir.py     # Toplanan künyelerin tam metinlerini çoklu iş parçacığıyla indirici
-│   └── README.md             # İki aşamalı mimari rehberi ve kullanım detayları
+│   ├── danistay_indir.py        # Danıştay 2.0 (Bedesten/UYAP API) SQLite tabanlı günlük karar arşivleyici
+│   └── README.md                # Modül dokümantasyonu ve çıktı şeması
+│
+├── mevzuat/
+│   ├── mevzuat_indirici.py      # Mevzuat Bilgi Sistemi (mevzuat.gov.tr) HTML/PDF arşivleyici (Yazar: Alperen Enes Bayar)
+│   └── README.md                # 3 aşamalı (index, fetch, status) kullanım rehberi
 │
 ├── yargıtay/
-│   ├── yargitay_indirici.py  # Yargıtay portalı Selenium/SQLite tabanlı tarih dilimli arşivleyici
-│   └── README.md             # Modül dokümantasyonu ve SQLite durum takip yapısı
+│   ├── yargitay_indirici.py     # Yargıtay 2.0 REST API ve SQLite tabanlı günlük karar arşivleyici
+│   └── README.md                # Modül dokümantasyonu ve SQLite durum takip yapısı
 │
-├── requirements.txt          # Proje genelinde kullanılan kütüphaneler
-├── .gitignore                # İndirilen veriler ve önbellek dosyaları için yoksayma kuralları
-└── README.md                 # Genel proje tanıtımı ve yönlendirmeler
+├── requirements.txt             # Proje genelinde kullanılan Python kütüphaneleri
+├── .gitignore                   # İndirilen veri klasörleri, SQLite/JSON durum dosyaları ve önbellek kuralları
+├── LICENSE                      # Lisans dosyası
+└── README.md                    # Genel proje tanıtımı ve modül yönlendirmeleri
 ```
 
 ## Modüller ve Yönlendirmeler
 
 | Modül | Hedef Kurum / Kaynak | Yöntem | Açıklama / Rehber |
 | :--- | :--- | :--- | :--- |
-| **[Anayasa Mahkemesi](./ana_yasa_mahkemesi/README.md)** | AYM Kararlar Bilgi Bankası | REST API + Günlük Tarama | Tarih bazlı geriye dönük sorgular ile tam metin AYM kararlarını Yıl/Ay/Gün yapısında JSON olarak arşivler. |
-| **[Belge İndirici](./belge_indirici/README.md)** | Sayıştay ve Kamu Siteleri | Headless Selenium + Urllib | Kategori ve alt kategorileri otomatik keşfederek yayımlanan tüm PDF raporları diske kaydeder. |
-| **[Danıştay](./danıştay/README.md)** | Danıştay Karar Arama | API + ThreadPoolExecutor | Önce sayfa bazında karar künyelerini çeker, ardından çoklu iş parçacığıyla metinleri ayrıştırıp Daire/Yıl dizininde arşivler. |
-| **[Yargıtay](./yargıtay/README.md)** | Yargıtay Karar Arama | Headless Selenium + SQLite | Tarihi 5 günlük dilimlere (chunk) bölerek arama yapar; SQLite ile durumu takip edip kararları JSON olarak saklar. |
+| **[Anayasa Mahkemesi](./ana_yasa_mahkemesi/README.md)** | AYM Kararlar Bilgi Bankası | REST API + Günlük Tarama | Günümüzden 1962'ye doğru günlük sorgularla AYM kararlarını hiçbir şekillendirme yapmadan ham JSON olarak `Yıl/Ay/Gün` yapısında arşivler; eksik/hatalı ID'leri ayrıca kurtarır. |
+| **[Danıştay](./danıştay/README.md)** | Danıştay Karar Arama (Bedesten API) | REST API + SQLite | UYAP/Bedesten API üzerinden gün gün kararları çeker; arama künyesini, ham detay yanıtını ve Base64'ten çözülmüş HTML metnini `Yıl/Ay/Gün` dizininde arşivler. |
+| **[Yargıtay](./yargıtay/README.md)** | Yargıtay Karar Arama 2.0 | REST API + SQLite | Yenilenen Yargıtay REST API servisini gün gün tarar; SQLite ile durumu takip ederek her kararın ham API detay yanıtını `Yıl/Ay/Gün` dizininde JSON olarak saklar. |
+| **[Mevzuat](./mevzuat/README.md)** | Mevzuat Bilgi Sistemi (`mevzuat.gov.tr`) | REST API + ThreadPoolExecutor | Kanun, KHK, Tüzük, Yönetmelik, Kararname ve Tebliğleri indeksler (`manifest.jsonl`); tam metin HTML ve resmi PDF belgelerini indirir. *(Alperen Enes Bayar tarafından yazılmıştır)* |
+| **[Belge İndirici](./belge_indirici/README.md)** | Sayıştay ve Kamu Siteleri | Headless Selenium + Urllib | Kategori ve alt kategorileri otomatik keşfederek yayımlanan tüm PDF raporları ve SHA-256/kaynak üstverilerini (`.metadata.json`) diske kaydeder. |
 
 ## Kurulum
 
@@ -59,14 +65,14 @@ Projeyi çalıştırmadan önce sisteminizde Python 3.8 veya üzeri bir sürüm�
    pip install -r requirements.txt
    ```
 
-3. Selenium tabanlı çalışan modüller (`belge_indirici` ve `yargıtay`) için sisteminizde Google Chrome veya Chromium kurulu olmalıdır.
+3. Sadece `belge_indirici` modülü dinamik kategori keşfi için Headless Selenium kullanır; bu modülü kullanacaksanız sisteminizde Google Chrome veya Chromium kurulu olmalıdır. Diğer tüm modüller (`ana_yasa_mahkemesi`, `danıştay`, `yargıtay`, `mevzuat`) doğrudan `requests` ile HTTP/REST API üzerinden çalışır.
 
 ## Ortak Mimari Prensipler
 
-- **Kesinti Koruması:** Her modül kendi içinde durum takip dosyası (`ilerleme_durumu.json`, `durum_detay.json`, `archive_state.db`) barındırır. Beklenmeyen bir ağ kesintisinde program yeniden başlatıldığında kaldığı yerden devam eder.
-- **Mükerrerlik Önleme:** Bellek içi kümeler (RAM Sets) veya yerel veritabanı sorguları üzerinden O(1) hızında kontrol yapılarak aynı kararın ikinci defa indirilmesi engellenir.
-- **Veri Temizliği:** HTML etiketleri (`<p>`, `<div>`, `<span>` vb.) ve kaçış karakterleri ayıklanarak salt karar metni elde edilir.
-- **Hiyerarşik Arşivleme:** Veriler rastgele tek bir klasöre yığılmaz; `Kurum/Daire/Yıl` veya `Yıl/Ay/Gün` şeklinde sınıflandırılarak saklanır.
+- **Saf (Ham) API Verisi Korunumu:** Yargı kararı indiricileri (`ana_yasa_mahkemesi`, `danıştay`, `yargıtay`), API'den dönen JSON yanıtlarını yapay alanlar uydurmadan ve metin içeriklerini bozmadan orijinal haliyle kaydeder (Danıştay modülü ek olarak yalnızca Base64 kodlu `content` alanını okunabilir `content_html` olarak çözer).
+- **Kesinti Koruması ve Hata Kurtarma:** Her modül kendi içinde durum takip yapısı (`archive_state.db`, `ilerleme_durumu.json`, `manifest.jsonl` / `fetch_log.jsonl`) barındırır. Beklenmeyen bir ağ kesintisinde veya `Ctrl+C` ile durdurulduğunda kalınan yerden devam eder; hata veren kararlar kayıt altına alınarak otomatik veya yardımcı betikle yeniden indirilir.
+- **Mükerrerlik Önleme:** Bellek içi kümeler (`set`) ve SQLite indeksleri üzerinden $O(1)$ karmaşıklığında kontrol yapılarak aynı kararın veya belgenin ikinci kez indirilmesi engellenir.
+- **Hiyerarşik Arşivleme:** Veriler tek bir klasöre yığılmaz; `YYYY/AA/GG/karar_{id}.json` veya mevzuat türü bazında sınıflandırılarak saklanır.
 
 ## Yasal Uyarı
 

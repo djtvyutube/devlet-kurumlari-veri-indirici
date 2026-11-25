@@ -3,18 +3,26 @@ Kamu Kurumları Web Siteleri Toplu Rapor ve Belge İndirici
 
 Bu modül, kamu kurumlarının (Sayıştay, bakanlıklar vb.) rapor ve duyuru
 sayfalarını Selenium kullanarak tarar; kategori ve alt kategori sayfalarını dolaşıp
-tespit ettiği PDF rapor dosyalarını yerel diske indirir.
+tespit ettiği PDF rapor dosyalarını yerel diske indirir ve her PDF dosyasının
+nereden geldiğini, ne olduğunu, kategori/sayfa bilgilerini içeren kapsamlı
+üstverilerini (metadata) hem eşlikçi JSON dosyası hem de toplu katalog olarak kaydeder.
 
 Temel Özellikler:
 - Sayfa gezintisi ve dinamik içerik yüklemeleri için headless Chromium desteği
 - Verilen URL'lerdeki '/reports/category/' yapısındaki alt kategorileri otomatik keşfetme
 - Sayfa numaralandırması (pagination) üzerinden sayfaları gezme
+- Her indirilen PDF için kaynak URL, kategori, rapor başlığı, açıklama, tarih, boyut ve SHA-256 özeti içeren metadata kaydı
+- İndirilen dosyaların orijinal adlarını koruyarak yanlarına kategorize edici bilgilerin (kurum, kategori, tarih/rapor bilgisi) eklenmesi
 - Zaman aşımı ve ağ kesintilerine karşı yeniden deneme mekanizması
 - Komut satırı (CLI) üzerinden esnek parametre yönetimi
 """
 
 import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
 import os
+import re
 import time
 import urllib.parse
 import urllib.request
@@ -23,10 +31,177 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
 
+def metin_temizle(metin):
+    """Fazla boşlukları ve satır sonlarını temizler."""
+    if not metin:
+        return ""
+    return re.sub(r"\s+", " ", str(metin)).strip()
+
+
+def slug_baslik_coz(url):
+    """URL yolundaki slug ifadesinden okunabilir bir başlık/kategori adı üretir."""
+    if not url:
+        return ""
+    path = urllib.parse.urlparse(url).path.strip("/")
+    if not path:
+        return ""
+    son_parca = urllib.parse.unquote(path.split("/")[-1])
+    son_parca = re.sub(r"^\d+-", "", son_parca)
+    return son_parca.replace("-", " ").strip().title()
+
+
+def dosya_adi_etiketi_temizle(metin, maks_uzunluk=55):
+    """
+    Kategorize edici bilgilerin (kurum, kategori, tarih vb.) dosya adına
+    güvenli ve okunabilir biçimde eklenebilmesi için metni temizler.
+    """
+    if not metin:
+        return ""
+    temiz = metin_temizle(metin)
+    temiz = re.sub(r'[\\/*?:"<>|\[\]]', "", temiz)
+    temiz = re.sub(r"[\s\-]+", "_", temiz).strip("._")
+    if len(temiz) > maks_uzunluk:
+        temiz = temiz[:maks_uzunluk].rstrip("._")
+    return temiz
+
+
+def kategorili_dosya_adi_olustur(orijinal_dosya_adi, pdf_kayit):
+    """
+    Orijinal dosya adını aynı şekilde koruyarak yanına kategorize edici
+    bilgileri (kurum, kategori adı, tespit edilen yıl/tarih) ekler.
+    Örn: orijinal_dosya_adi__[sayistay_gov_tr__Faaliyet_Raporlari__2024].pdf
+    """
+    kok, uzanti = os.path.splitext(orijinal_dosya_adi)
+    if not uzanti:
+        uzanti = ".pdf"
+
+    kurum_raw = (pdf_kayit.get("kaynak_domain") or "").replace("www.", "")
+    kurum_etiket = dosya_adi_etiketi_temizle(kurum_raw, maks_uzunluk=30)
+
+    kategori_raw = (
+        pdf_kayit.get("kategori_adi")
+        or pdf_kayit.get("belge_bilgisi", {}).get("kategori")
+        or "Genel_Rapor"
+    )
+    kategori_etiket = dosya_adi_etiketi_temizle(kategori_raw, maks_uzunluk=55)
+
+    tarih_raw = pdf_kayit.get("belge_bilgisi", {}).get("yayin_veya_tespit_tarihi") or ""
+    tarih_etiket = dosya_adi_etiketi_temizle(tarih_raw, maks_uzunluk=20)
+
+    etiket_parcalari = [p for p in (kurum_etiket, kategori_etiket, tarih_etiket) if p]
+    if etiket_parcalari:
+        kategori_eki = "__[" + "__".join(etiket_parcalari) + "]"
+    else:
+        kategori_eki = "__[Genel_Kategori]"
+
+    return f"{kok}{kategori_eki}{uzanti}"
+
+
+def sayfa_metadatasini_cikar(driver):
+    """
+    Açık olan detay sayfasından raporun ne olduğunu belirten başlık, açıklama,
+    yayın tarihi ve meta etiketlerini ayıklar.
+    """
+    sayfa_basligi = metin_temizle(driver.title)
+    ana_baslik = ""
+    aciklama = ""
+    yayin_tarihi = ""
+    meta_etiketleri = {}
+
+    # 1. h1 / h2 başlıklarını kontrol et
+    for tag in ("h1", "h2", "h3"):
+        try:
+            elems = driver.find_elements(By.TAG_NAME, tag)
+            for el in elems:
+                txt = metin_temizle(el.text)
+                if txt and len(txt) > 3:
+                    ana_baslik = txt
+                    break
+            if ana_baslik:
+                break
+        except Exception:
+            pass
+
+    # 2. Sayfadaki meta etiketlerini (og:title, description, date vb.) topla
+    try:
+        metas = driver.find_elements(By.TAG_NAME, "meta")
+        for m in metas:
+            name = (m.get_attribute("name") or m.get_attribute("property") or "").strip().lower()
+            content = metin_temizle(m.get_attribute("content") or "")
+            if name and content:
+                if name in (
+                    "description",
+                    "og:description",
+                    "og:title",
+                    "og:site_name",
+                    "keywords",
+                    "author",
+                    "article:published_time",
+                    "publish_date",
+                    "date",
+                ):
+                    meta_etiketleri[name] = content
+    except Exception:
+        pass
+
+    if not ana_baslik:
+        ana_baslik = meta_etiketleri.get("og:title") or sayfa_basligi
+
+    # 3. Açıklama / özet metni çıkar
+    try:
+        p_elems = driver.find_elements(By.TAG_NAME, "p")
+        paragraflar = []
+        for p in p_elems:
+            p_txt = metin_temizle(p.text)
+            if len(p_txt) > 25:
+                paragraflar.append(p_txt)
+            if len(paragraflar) >= 3:
+                break
+        if paragraflar:
+            aciklama = " ".join(paragraflar)
+    except Exception:
+        pass
+
+    if not aciklama:
+        aciklama = meta_etiketleri.get("description") or meta_etiketleri.get("og:description") or ""
+
+    # 4. Tarih bilgisi ara (time etiketi veya metin içi tarih deseni)
+    try:
+        time_elems = driver.find_elements(By.TAG_NAME, "time")
+        for t_el in time_elems:
+            dt_val = metin_temizle(t_el.get_attribute("datetime") or t_el.text)
+            if dt_val:
+                yayin_tarihi = dt_val
+                break
+    except Exception:
+        pass
+
+    if not yayin_tarihi:
+        yayin_tarihi = meta_etiketleri.get("article:published_time") or meta_etiketleri.get("date") or ""
+
+    if not yayin_tarihi:
+        try:
+            body_text = driver.find_element(By.TAG_NAME, "body").text
+            tarih_eslesme = re.search(r"\b(\d{2}[./]\d{2}[./]\d{4}|\d{4}-\d{2}-\d{2})\b", body_text)
+            if tarih_eslesme:
+                yayin_tarihi = tarih_eslesme.group(1)
+        except Exception:
+            pass
+
+    return {
+        "rapor_basligi": ana_baslik,
+        "sayfa_basligi": sayfa_basligi,
+        "aciklama": aciklama,
+        "tespit_edilen_tarih": yayin_tarihi,
+        "html_meta_etiketleri": meta_etiketleri,
+    }
+
+
 def raporlari_tara_ve_indir(url_listesi, toplam_sayfa, cikti_klasoru):
     """
     Belirtilen ana kategori URL'lerini ve alt kategorilerini tarayarak
-    bulunan tüm rapor detay sayfalarından PDF dosyalarını çeker.
+    bulunan tüm rapor detay sayfalarından PDF dosyalarını ve nereden geldiğini/ne olduğunu
+    gösteren metadata JSON kayıtlarını çeker.
     """
     if not os.path.exists(cikti_klasoru):
         os.makedirs(cikti_klasoru, exist_ok=True)
@@ -42,7 +217,8 @@ def raporlari_tara_ve_indir(url_listesi, toplam_sayfa, cikti_klasoru):
     )
 
     driver = webdriver.Chrome(options=chrome_options)
-    taranacak_kategoriler = set()
+    # kategori_url -> {"ana_kaynak_url": ..., "kategori_adi": ...}
+    taranacak_kategoriler = {}
 
     try:
         # 1. Aşama: Ana sayfalardan alt kategorilerin keşfi
@@ -54,22 +230,35 @@ def raporlari_tara_ve_indir(url_listesi, toplam_sayfa, cikti_klasoru):
             driver.get(ana_url)
             time.sleep(4)
 
-            taranacak_kategoriler.add(ana_url)
+            ana_baslik = metin_temizle(driver.title) or slug_baslik_coz(ana_url)
+            taranacak_kategoriler[ana_url] = {
+                "ana_kaynak_url": ana_url,
+                "kategori_url": ana_url,
+                "kategori_adi": slug_baslik_coz(ana_url) or ana_baslik,
+            }
+
             links = driver.find_elements(By.TAG_NAME, "a")
             for link in links:
                 href = link.get_attribute("href")
                 if href and "/reports/category/" in href:
                     alt_kategori_url = urllib.parse.urljoin(ana_url, href)
-                    taranacak_kategoriler.add(alt_kategori_url)
+                    link_metni = metin_temizle(link.text) or slug_baslik_coz(alt_kategori_url)
+                    if alt_kategori_url not in taranacak_kategoriler:
+                        taranacak_kategoriler[alt_kategori_url] = {
+                            "ana_kaynak_url": ana_url,
+                            "kategori_url": alt_kategori_url,
+                            "kategori_adi": link_metni,
+                        }
 
         print(
             f"\n[*] Toplam {len(taranacak_kategoriler)} adet kategori (ana + alt) "
             "belirlendi. Raporlar taranıyor..."
         )
 
-        # 2. Aşama: Kategori sayfalarındaki rapor bağlantılarının taranması
-        rapor_linkleri = set()
-        for kat_url in taranacak_kategoriler:
+        # 2. Aşama: Kategori sayfalarındaki rapor bağlantılarının ve kaynak bilgilerinin taranması
+        # rapor_url -> kaynak/kategori metadata sözlüğü
+        rapor_kayitlari = {}
+        for kat_url, kat_bilgi in taranacak_kategoriler.items():
             for sayfa in range(1, toplam_sayfa + 1):
                 parsed_url = urllib.parse.urlparse(kat_url)
                 query_params = urllib.parse.parse_qs(parsed_url.query)
@@ -95,8 +284,20 @@ def raporlari_tara_ve_indir(url_listesi, toplam_sayfa, cikti_klasoru):
                         href = link.get_attribute("href")
                         if href and "/reports/" in href and "category" not in href:
                             tam_url = urllib.parse.urljoin(current_url, href)
-                            if tam_url not in rapor_linkleri:
-                                rapor_linkleri.add(tam_url)
+                            if tam_url not in rapor_kayitlari:
+                                liste_link_basligi = metin_temizle(link.text) or metin_temizle(
+                                    link.get_attribute("title")
+                                )
+                                rapor_kayitlari[tam_url] = {
+                                    "kaynak_domain": parsed_url.netloc,
+                                    "ana_giris_url": kat_bilgi["ana_kaynak_url"],
+                                    "kategori_url": kat_url,
+                                    "kategori_adi": kat_bilgi["kategori_adi"] or slug_baslik_coz(kat_url),
+                                    "bulundugu_liste_sayfasi_url": current_url,
+                                    "bulundugu_sayfa_no": sayfa,
+                                    "rapor_detay_sayfasi_url": tam_url,
+                                    "liste_link_metni": liste_link_basligi,
+                                }
                                 bulunan_sayfa += 1
 
                     if bulunan_sayfa > 0:
@@ -108,33 +309,60 @@ def raporlari_tara_ve_indir(url_listesi, toplam_sayfa, cikti_klasoru):
                     print(f"  [-] Kategori taranamadı ({kat_url}): {e}")
 
         print(
-            f"\n[*] Toplam {len(rapor_linkleri)} adet benzersiz rapor detay sayfası "
-            "bulundu. Doğrudan PDF bağlantıları toplanıyor..."
+            f"\n[*] Toplam {len(rapor_kayitlari)} adet benzersiz rapor detay sayfası "
+            "bulundu. Doğrudan PDF bağlantıları ve sayfa üstverileri (metadata) toplanıyor..."
         )
 
-        # 3. Aşama: Rapor detay sayfalarından doğrudan PDF indirme bağlantılarının ayıklanması
-        gercek_pdf_urls = []
-        for i, rapor_url in enumerate(rapor_linkleri):
-            print(f"  [{i+1}/{len(rapor_linkleri)}] Detay sayfası inceleniyor: {rapor_url}")
+        # 3. Aşama: Rapor detay sayfalarından doğrudan PDF indirme bağlantılarının ve sayfa metadatasının ayıklanması
+        # pdf_url -> birleştirilmiş metadata kaydı
+        gercek_pdf_kayitlari = []
+        gorulen_pdf_urls = set()
+
+        for i, (rapor_url, kaynak_meta) in enumerate(rapor_kayitlari.items()):
+            print(f"  [{i+1}/{len(rapor_kayitlari)}] Detay sayfası inceleniyor: {rapor_url}")
             try:
                 driver.get(rapor_url)
                 time.sleep(2)
 
+                sayfa_meta = sayfa_metadatasini_cikar(driver)
                 detay_links = driver.find_elements(By.TAG_NAME, "a")
+
                 for d_link in detay_links:
                     d_href = d_link.get_attribute("href")
                     if d_href:
                         d_lower = d_href.lower()
                         if ".pdf" in d_lower or "pdf" in d_lower or "download" in d_lower:
                             pdf_url = urllib.parse.urljoin(rapor_url, d_href)
-                            if pdf_url not in gercek_pdf_urls:
-                                gercek_pdf_urls.append(pdf_url)
+                            if pdf_url not in gorulen_pdf_urls:
+                                gorulen_pdf_urls.add(pdf_url)
+                                indirme_buton_metni = metin_temizle(d_link.text) or metin_temizle(
+                                    d_link.get_attribute("title")
+                                )
+                                kayit = {
+                                    **kaynak_meta,
+                                    "pdf_indirme_url": pdf_url,
+                                    "indirme_link_metni": indirme_buton_metni,
+                                    "belge_bilgisi": {
+                                        "rapor_basligi": (
+                                            sayfa_meta["rapor_basligi"]
+                                            or kaynak_meta["liste_link_metni"]
+                                            or slug_baslik_coz(rapor_url)
+                                        ),
+                                        "sayfa_basligi": sayfa_meta["sayfa_basligi"],
+                                        "aciklama": sayfa_meta["aciklama"],
+                                        "yayin_veya_tespit_tarihi": sayfa_meta["tespit_edilen_tarih"],
+                                        "kategori": kaynak_meta["kategori_adi"],
+                                        "kurum_domain": kaynak_meta["kaynak_domain"],
+                                        "html_meta_etiketleri": sayfa_meta["html_meta_etiketleri"],
+                                    },
+                                }
+                                gercek_pdf_kayitlari.append(kayit)
                                 break
             except Exception as e:
                 print(f"  [-] Detay sayfası okunamadı: {e}")
 
-        print(f"\n[*] Toplam {len(gercek_pdf_urls)} adet PDF bağlantısı tespit edildi.")
-        print("[*] İndirme işlemleri başlatılıyor...\n")
+        print(f"\n[*] Toplam {len(gercek_pdf_kayitlari)} adet PDF bağlantısı ve metadatası tespit edildi.")
+        print("[*] İndirme ve metadata kayıt işlemleri başlatılıyor...\n")
 
         headers = {
             "User-Agent": (
@@ -143,30 +371,104 @@ def raporlari_tara_ve_indir(url_listesi, toplam_sayfa, cikti_klasoru):
             )
         }
 
-        # 4. Aşama: PDF dosyalarını parçalı okuma yöntemiyle diske kaydetme
+        # 4. Aşama: PDF dosyalarını ve eşlikçi metadata JSON dosyalarını diske kaydetme
         indirilen = 0
-        for i, pdf_url in enumerate(gercek_pdf_urls):
-            filename = os.path.basename(urllib.parse.urlparse(pdf_url).path)
-            if not filename or not filename.endswith(".pdf"):
-                filename = f"rapor_{i+1}.pdf"
+        tum_metadatalar = []
+        kullanilan_dosya_adlari = set()
+
+        for i, pdf_kayit in enumerate(gercek_pdf_kayitlari):
+            pdf_url = pdf_kayit["pdf_indirme_url"]
+            raw_filename = urllib.parse.unquote(os.path.basename(urllib.parse.urlparse(pdf_url).path))
+            raw_filename = re.sub(r'[\\/*?:"<>|]', "_", raw_filename).strip()
+
+            if not raw_filename or not raw_filename.lower().endswith(".pdf"):
+                aday_isim = slug_baslik_coz(pdf_kayit["rapor_detay_sayfasi_url"]).replace(" ", "_").lower()
+                aday_isim = re.sub(r'[\\/*?:"<>|]', "_", aday_isim)
+                raw_filename = f"{aday_isim or 'rapor'}_{i+1}.pdf"
+
+            orijinal_dosya_adi = raw_filename
+            kategorili_isim = kategorili_dosya_adi_olustur(orijinal_dosya_adi, pdf_kayit)
+
+            # Dosya adı çakışmasını önle
+            filename = kategorili_isim
+            if filename in kullanilan_dosya_adlari:
+                kok, uzanti = os.path.splitext(kategorili_isim)
+                filename = f"{kok}_{i+1}{uzanti}"
+            kullanilan_dosya_adlari.add(filename)
 
             dosya_yolu = os.path.join(cikti_klasoru, filename)
+            metadata_dosya_adi = f"{filename}.metadata.json"
+            metadata_dosya_yolu = os.path.join(cikti_klasoru, metadata_dosya_adi)
+
+            # Eğer PDF ve metadata dosyası zaten diskte mevcutsa mükerrer indirmeyi atla
+            if os.path.exists(dosya_yolu) and os.path.exists(metadata_dosya_yolu):
+                try:
+                    with open(metadata_dosya_yolu, "r", encoding="utf-8") as mf:
+                        mevcut_meta = json.load(mf)
+                    tum_metadatalar.append(mevcut_meta)
+                    indirilen += 1
+                    print(f"  [{i+1}/{len(gercek_pdf_kayitlari)}] Zaten mevcut, atlanıyor: {filename}")
+                    continue
+                except Exception:
+                    pass
 
             max_deneme = 3
             for deneme in range(1, max_deneme + 1):
-                print(f"  [{i+1}/{len(gercek_pdf_urls)}] İndiriliyor: {filename} (Deneme {deneme}/{max_deneme})")
+                print(f"  [{i+1}/{len(gercek_pdf_kayitlari)}] İndiriliyor: {filename} (Deneme {deneme}/{max_deneme})")
                 try:
                     pdf_req = urllib.request.Request(pdf_url, headers=headers)
+                    sha256_hash = hashlib.sha256()
+                    toplam_boyut = 0
+
                     with urllib.request.urlopen(pdf_req, timeout=60) as response:
+                        http_headers = dict(response.info())
+                        content_type = http_headers.get("Content-Type", "application/pdf")
+                        last_modified = http_headers.get("Last-Modified", "")
+                        content_disposition = http_headers.get("Content-Disposition", "")
+
                         with open(dosya_yolu, "wb") as f:
                             while True:
                                 chunk = response.read(1024 * 64)
                                 if not chunk:
                                     break
                                 f.write(chunk)
+                                sha256_hash.update(chunk)
+                                toplam_boyut += len(chunk)
 
+                    tam_metadata = {
+                        "dosya_adi": filename,
+                        "orijinal_dosya_adi": orijinal_dosya_adi,
+                        "dosya_yolu": os.path.abspath(dosya_yolu),
+                        "dosya_turu": "PDF",
+                        "mime_type": content_type,
+                        "dosya_boyutu_byte": toplam_boyut,
+                        "sha256": sha256_hash.hexdigest(),
+                        "sunucu_son_degisiklik_tarihi": last_modified,
+                        "content_disposition": content_disposition,
+                        "indirme_zamani_utc": datetime.now(timezone.utc).isoformat(),
+                        "nereden_geldi": {
+                            "kurum_domain": pdf_kayit["kaynak_domain"],
+                            "ana_giris_url": pdf_kayit["ana_giris_url"],
+                            "kategori_url": pdf_kayit["kategori_url"],
+                            "kategori_adi": pdf_kayit["kategori_adi"],
+                            "bulundugu_liste_sayfasi_url": pdf_kayit["bulundugu_liste_sayfasi_url"],
+                            "bulundugu_sayfa_no": pdf_kayit["bulundugu_sayfa_no"],
+                            "rapor_detay_sayfasi_url": pdf_kayit["rapor_detay_sayfasi_url"],
+                            "pdf_indirme_url": pdf_url,
+                        },
+                        "ne_oldugu": {
+                            **pdf_kayit["belge_bilgisi"],
+                            "liste_link_metni": pdf_kayit["liste_link_metni"],
+                            "indirme_link_metni": pdf_kayit["indirme_link_metni"],
+                        },
+                    }
+
+                    with open(metadata_dosya_yolu, "w", encoding="utf-8") as mf:
+                        json.dump(tam_metadata, mf, ensure_ascii=False, indent=4)
+
+                    tum_metadatalar.append(tam_metadata)
                     indirilen += 1
-                    print(f"    -> Başarıyla kaydedildi: {filename}")
+                    print(f"    -> Başarıyla kaydedildi: {filename} (+ {metadata_dosya_adi})")
                     break
                 except Exception as e:
                     print(f"    -> Hata oluştu: {e}")
@@ -175,7 +477,26 @@ def raporlari_tara_ve_indir(url_listesi, toplam_sayfa, cikti_klasoru):
                     else:
                         print(f"    -> {filename} indirilemedi, atlanıyor.")
 
-        print(f"\n[BİLGİ] İşlem tamamlandı. Toplam {indirilen} adet PDF '{cikti_klasoru}' klasörüne kaydedildi.")
+        # Tüm indirilen dosyaların toplu metadata indeksini kaydet
+        katalog_yolu = os.path.join(cikti_klasoru, "indirilen_dosyalar_metadata.json")
+        with open(katalog_yolu, "w", encoding="utf-8") as kf:
+            json.dump(
+                {
+                    "toplam_indirilen_dosya": indirilen,
+                    "olusturulma_zamani_utc": datetime.now(timezone.utc).isoformat(),
+                    "taranan_ana_urller": url_listesi,
+                    "dosyalar": tum_metadatalar,
+                },
+                kf,
+                ensure_ascii=False,
+                indent=4,
+            )
+
+        print(
+            f"\n[BİLGİ] İşlem tamamlandı. Toplam {indirilen} adet PDF ve metadata dosyası "
+            f"'{cikti_klasoru}' klasörüne kaydedildi."
+        )
+        print(f"[BİLGİ] Toplu metadata kataloğu: {katalog_yolu}")
 
     except Exception as e:
         print(f"[HATA] Kritik bir hata meydana geldi: {e}")
@@ -187,7 +508,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=(
             "Sayıştay ve benzeri kamu sitelerinden çoklu URL desteği ve "
-            "alt kategori taramasıyla otomatik PDF rapor indirme aracı."
+            "alt kategori taramasıyla otomatik PDF rapor ve metadata indirme aracı."
         ),
         formatter_class=argparse.RawTextHelpFormatter,
         epilog=(
@@ -199,7 +520,7 @@ if __name__ == "__main__":
             "PARAMETRELER:\n"
             "  -u, --urls   : Taranacak web sitelerinin adresleri (boşluk bırakılarak birden fazla verilebilir)\n"
             "  -s, --sayfa  : Her kategori için taranacak maksimum sayfa sayısı (varsayılan: 1)\n"
-            "  -o, --cikti  : PDF dosyalarının kaydedileceği hedef dizin (varsayılan: indirilen_pdfler)\n"
+            "  -o, --cikti  : PDF ve metadata dosyalarının kaydedileceği hedef dizin (varsayılan: indirilen_pdfler)\n"
         ),
     )
 
@@ -221,7 +542,7 @@ if __name__ == "__main__":
         "-o",
         "--cikti",
         default="indirilen_pdfler",
-        help="PDF dosyalarının kaydedileceği klasör adı"
+        help="PDF ve metadata dosyalarının kaydedileceği klasör adı"
     )
 
     args = parser.parse_args()

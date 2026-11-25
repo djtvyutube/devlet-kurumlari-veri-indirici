@@ -2,8 +2,8 @@
 Anayasa Mahkemesi Karar İndirici ve Arşivleyici
 
 Bu modül, Anayasa Mahkemesi Kararlar Bilgi Bankası genel arama API'sini
-kullanarak kararları gün gün tarar; karar detaylarını ve metin içeriklerini
-HTML etiketlerinden arındırarak JSON formatında yerel diske kaydeder.
+kullanarak kararları gün gün tarar; karar detaylarını ve API yanıtlarını
+hiçbir şekillendirme veya düzenleme yapmadan ham JSON formatında yerel diske kaydeder.
 
 Temel Özellikler:
 - Tarih bazlı geriye dönük tarama (varsayılan: günümüzden 1962'ye kadar)
@@ -46,6 +46,11 @@ class AnayasaMahkemesiScraper:
 
         self.session = self.olustur_oturum()
         self.mevcut_dosyalar = set()
+        self.basarili_idler = []
+        self._basarili_set = set()
+        self.hatali_idler = []
+        self._hatali_set = set()
+        self.aktif_tarih = None
         self.dosyalar_onbellekle()
 
     def olustur_oturum(self):
@@ -93,15 +98,25 @@ class AnayasaMahkemesiScraper:
 
     def ilerleme_oku(self):
         """
-        İlerleme dosyasını kontrol eder; varsa kalınan son tarihi (YYYY-MM-DD) döner.
+        İlerleme dosyasını kontrol eder; varsa kalınan son tarihi (YYYY-MM-DD) döner
+        ve daha önce kaydedilmiş başarılı/hatalı ID listelerini belleğe yükler.
         """
         if os.path.exists(self.ilerleme_dosyasi):
             try:
                 with open(self.ilerleme_dosyasi, "r", encoding="utf-8") as f:
                     veri = json.load(f)
+                    kayitli_basarililar = veri.get("basarili_idler", [])
+                    if isinstance(kayitli_basarililar, list):
+                        self.basarili_idler = kayitli_basarililar
+                        self._basarili_set = set(kayitli_basarililar)
+
+                    kayitli_hatalar = veri.get("hatali_idler", [])
+                    if isinstance(kayitli_hatalar, list):
+                        self.hatali_idler = kayitli_hatalar
+                        self._hatali_set = set(kayitli_hatalar)
+
                     son_t = veri.get("son_tarih")
                     if son_t:
-                        # GG.AA.YYYY formatı geldiyse YYYY-MM-DD formatına dönüştür
                         if "." in son_t:
                             parts = son_t.split(".")
                             if len(parts) == 3:
@@ -113,15 +128,21 @@ class AnayasaMahkemesiScraper:
 
     def ilerleme_kaydet(self, tarih_str, indirilen_ekstra=0):
         """
-        İşlenen son tarihi ve toplam dosya adedini durum dosyasına kaydeder.
+        İşlenen son tarihi, toplam dosya adedini, kusursuz inen ve hata veren ID'leri durum dosyasına kaydeder.
         """
         try:
-            with open(self.ilerleme_dosyasi, "w", encoding="utf-8") as f:
+            gecici_dosya = f"{self.ilerleme_dosyasi}.tmp"
+            with open(gecici_dosya, "w", encoding="utf-8") as f:
                 json.dump({
                     "son_tarih": tarih_str,
                     "toplam_onbellek_dosya": len(self.mevcut_dosyalar),
+                    "basarili_id_sayisi": len(self.basarili_idler),
+                    "basarili_idler": self.basarili_idler,
+                    "hatali_id_sayisi": len(self.hatali_idler),
+                    "hatali_idler": self.hatali_idler,
                     "guncelleme_zamani_utc": datetime.now(timezone.utc).isoformat()
                 }, f, ensure_ascii=False, indent=4)
+            os.replace(gecici_dosya, self.ilerleme_dosyasi)
         except Exception:
             pass
 
@@ -132,41 +153,6 @@ class AnayasaMahkemesiScraper:
         zaman = time.strftime("%H:%M:%S")
         print(f"[{zaman}] {mesaj}")
 
-    def html_temizle(self, html_metin):
-        """
-        HTML etiketlerini, özel karakter kodlarını (HTML entities) ve
-        fazlalık boşlukları temizler.
-        """
-        if not html_metin or not isinstance(html_metin, str):
-            return ""
-
-        temiz = re.sub(r'<[^>]+>', ' ', html_metin)
-        temiz = temiz.replace('&nbsp;', ' ')
-        temiz = temiz.replace('&uuml;', 'ü').replace('&Uuml;', 'Ü')
-        temiz = temiz.replace('&ouml;', 'ö').replace('&Ouml;', 'Ö')
-        temiz = temiz.replace('&ccedil;', 'ç').replace('&Ccedil;', 'Ç')
-        temiz = temiz.replace('&ş;', 'ş').replace('&Ş;', 'Ş')
-        temiz = temiz.replace('&ğ;', 'ğ').replace('&Ğ;', 'Ğ')
-        temiz = temiz.replace('&ı;', 'ı').replace('&İ;', 'İ')
-        temiz = temiz.replace('&amp;', '&').replace('&quot;', '"').replace('&apos;', "'")
-        temiz = re.sub(r'\s+', ' ', temiz).strip()
-        return temiz
-
-    def metinleri_recursive_temizle(self, veri):
-        """
-        İç içe geçmiş sözlük (dict) ve liste yapılarındaki tüm metin alanlarını
-        özyinelemeli olarak dolaşarak HTML artıklarından arındırır.
-        """
-        if isinstance(veri, dict):
-            return {k: self.metinleri_recursive_temizle(v) for k, v in veri.items()}
-        elif isinstance(veri, list):
-            return [self.metinleri_recursive_temizle(item) for item in veri]
-        elif isinstance(veri, str):
-            if '<' in veri and '>' in veri:
-                return self.html_temizle(veri)
-            return veri
-        return veri
-
     def temizle_id_degeri(self, raw_id):
         """
         API'den dönen karmaşık veya Base64 formatlı ID değerlerini ayrıştırır
@@ -176,7 +162,6 @@ class AnayasaMahkemesiScraper:
             return ""
         str_id = str(raw_id).strip()
 
-        # Base64 ile kodlanmış 'kbb:...' formatındaki ID'ler için çözümleme
         if str_id.startswith("a2Ji") or str_id.startswith("kbb:"):
             try:
                 padding = 4 - (len(str_id) % 4)
@@ -195,7 +180,6 @@ class AnayasaMahkemesiScraper:
             except Exception:
                 pass
 
-        # İşletim sistemi dosya adlarında geçersiz karakterleri alt çizgiye dönüştür
         temiz = re.sub(r'[\\/*?:"<>| ]', '_', str_id)
         return temiz
 
@@ -268,9 +252,9 @@ class AnayasaMahkemesiScraper:
 
         return tum_kararlar
 
-    def karar_detay_getir(self, doc_id, karar_tipi):
+    def karar_detay_getir(self, doc_id, karar_tipi=None):
         """
-        Karar ID'si ve türü üzerinden kararın detaylı metnini ve künyesini sorgular.
+        Karar ID'si ve varsa türü üzerinden kararın detaylı metnini ve künyesini sorgular.
         """
         clean_id = doc_id
         if doc_id:
@@ -281,9 +265,11 @@ class AnayasaMahkemesiScraper:
 
         payload = {
             "id": clean_id,
-            "kararTipi": karar_tipi or "BireyselBasvuru",
             "size": 1
         }
+        if karar_tipi is not None:
+            payload["kararTipi"] = karar_tipi
+
         return self.api_istek_gonder(payload)
 
     def arsivle(self, baslangic_tarihi_str=None, bitis_tarihi_str="1962-01-01"):
@@ -292,9 +278,8 @@ class AnayasaMahkemesiScraper:
         tüm günleri tarayarak kararları diskte arşivler.
         Tarih formatı: YYYY-MM-DD
         """
-        # Kayıtlı ilerleme kontrolü
+        kayitli_son = self.ilerleme_oku()
         if not baslangic_tarihi_str:
-            kayitli_son = self.ilerleme_oku()
             if kayitli_son:
                 baslangic_tarihi_str = kayitli_son
                 self.log_yaz(f"[*] Kayıtlı durumdan devam ediliyor: {baslangic_tarihi_str}")
@@ -307,92 +292,92 @@ class AnayasaMahkemesiScraper:
         self.log_yaz(f"[*] Arşivleme başlatılıyor: {current_date.strftime('%Y-%m-%d')} -> {end_date.strftime('%Y-%m-%d')}")
 
         toplam_indirilen = 0
+        tarih_iso = current_date.strftime("%Y-%m-%d")
+        self.aktif_tarih = tarih_iso
 
-        while current_date >= end_date:
-            tarih_iso = current_date.strftime("%Y-%m-%d")
-            yil = current_date.strftime("%Y")
-            ay = current_date.strftime("%m")
-            gun = current_date.strftime("%d")
+        try:
+            while current_date >= end_date:
+                tarih_iso = current_date.strftime("%Y-%m-%d")
+                self.aktif_tarih = tarih_iso
+                yil = current_date.strftime("%Y")
+                ay = current_date.strftime("%m")
+                gun = current_date.strftime("%d")
 
-            karar_listesi = self.gunun_kararlarini_getir(tarih_iso)
-            karar_sayisi = len(karar_listesi)
+                karar_listesi = self.gunun_kararlarini_getir(tarih_iso)
+                karar_sayisi = len(karar_listesi)
 
-            if karar_sayisi > 0:
-                self.log_yaz(f"Tarih: {tarih_iso} | Bulunan Karar: {karar_sayisi}")
-                gunluk_indirilen = 0
+                if karar_sayisi > 0:
+                    self.log_yaz(f"Tarih: {tarih_iso} | Bulunan Karar: {karar_sayisi}")
+                    gunluk_indirilen = 0
 
-                for karar in karar_listesi:
-                    k_id = karar.get("id")
-                    k_tip = karar.get("kararTipi") or karar.get("karar_tipi") or "BireyselBasvuru"
-                    basvuru_no = karar.get("basvuruNo") or karar.get("kararNo") or k_id
+                    for karar in karar_listesi:
+                        k_id = karar.get("id")
+                        if not k_id:
+                            continue
+                        k_tip = karar.get("kararTipi")
 
-                    dosya_adi = self.dosya_adi_olustur(basvuru_no)
-                    alt_dosya_adi = self.dosya_adi_olustur(k_id)
+                        dosya_adi = self.dosya_adi_olustur(k_id)
 
-                    # Hiyerarşik klasör yapısı: aymjson/YYYY/MM/DD
-                    hedef_klasor = os.path.join(self.root_output_dir, yil, ay, gun)
-                    hedef_dosya_yolu = os.path.join(hedef_klasor, dosya_adi)
+                        hedef_klasor = os.path.join(self.root_output_dir, yil, ay, gun)
+                        hedef_dosya_yolu = os.path.join(hedef_klasor, dosya_adi)
 
-                    # Dosya daha önceden indirilmişse atla
-                    if dosya_adi in self.mevcut_dosyalar or alt_dosya_adi in self.mevcut_dosyalar or os.path.exists(hedef_dosya_yolu):
-                        continue
+                        if dosya_adi in self.mevcut_dosyalar or os.path.exists(hedef_dosya_yolu):
+                            if k_id not in self._basarili_set:
+                                self._basarili_set.add(k_id)
+                                self.basarili_idler.append(k_id)
+                            if k_id in self._hatali_set:
+                                self._hatali_set.discard(k_id)
+                                self.hatali_idler.remove(k_id)
+                            continue
 
-                    # Karar detayını sorgula
-                    detay_yanit = self.karar_detay_getir(k_id, k_tip)
-                    if not detay_yanit:
-                        self.log_yaz(f"[UYARI] Detay içeriği alınamadı, atlandı: ID {k_id}")
-                        continue
+                        detay_yanit = self.karar_detay_getir(k_id, k_tip)
+                        if not detay_yanit or not isinstance(detay_yanit, dict) or not detay_yanit.get("data"):
+                            self.log_yaz(f"[UYARI] Detay içeriği alınamadı, atlandı: ID {k_id}")
+                            if k_id not in self._hatali_set:
+                                self._hatali_set.add(k_id)
+                                self.hatali_idler.append(k_id)
+                                self.ilerleme_kaydet(tarih_iso, toplam_indirilen)
+                            continue
 
-                    birlesik_veri = {
-                        "baslik": karar.get("basvuruAdi") or karar.get("kararKonusu") or f"Karar {basvuru_no}",
-                        "detay_bilgi": f"{basvuru_no} | {karar.get('kararTuruBasvuruSonucuLabel', '')} | Karar Tarihi: {tarih_iso}",
-                        "id": k_id,
-                        "karar_tipi": k_tip,
-                        "kategori": karar.get("kararVerenBirimLabel") or k_tip,
-                        "link": f"/kbb/pages/search/Tumu?id={k_id}&type={k_tip}",
-                        "onizleme_metni": karar.get("kararKonusu", ""),
-                        "api_detay_icerigi": detay_yanit,
-                        "meta_veri": {
-                            "arsivleme_tarihi_utc": datetime.now(timezone.utc).isoformat(),
-                            "karar_tarihi": tarih_iso,
-                            "yil": yil,
-                            "ay": ay,
-                            "gun": gun,
-                            "kayit_dizini": f"{os.path.basename(self.root_output_dir)}/{yil}/{ay}/{gun}",
-                            "kaynak": "Anayasa Mahkemesi Kararlar Bilgi Bankası"
-                        }
-                    }
+                        os.makedirs(hedef_klasor, exist_ok=True)
+                        with open(hedef_dosya_yolu, "w", encoding="utf-8") as f:
+                            json.dump(detay_yanit, f, ensure_ascii=False, indent=4)
 
-                    # HTML etiketlerini ve fazlalıkları ayıkla
-                    temiz_veri = self.metinleri_recursive_temizle(birlesik_veri)
+                        self.mevcut_dosyalar.add(dosya_adi)
+                        if k_id not in self._basarili_set:
+                            self._basarili_set.add(k_id)
+                            self.basarili_idler.append(k_id)
+                        if k_id in self._hatali_set:
+                            self._hatali_set.discard(k_id)
+                            self.hatali_idler.remove(k_id)
+                        toplam_indirilen += 1
+                        gunluk_indirilen += 1
+                        self.ilerleme_kaydet(tarih_iso, toplam_indirilen)
 
-                    os.makedirs(hedef_klasor, exist_ok=True)
-                    with open(hedef_dosya_yolu, "w", encoding="utf-8") as f:
-                        json.dump(temiz_veri, f, ensure_ascii=False, indent=4)
+                        print(f"  [+] Kaydedildi: {tarih_iso} | ID: {k_id} -> {yil}/{ay}/{gun}/{dosya_adi}")
+                        time.sleep(random.uniform(0.05, 0.15))
 
-                    self.mevcut_dosyalar.add(dosya_adi)
-                    self.mevcut_dosyalar.add(alt_dosya_adi)
-                    toplam_indirilen += 1
-                    gunluk_indirilen += 1
+                    if gunluk_indirilen > 0:
+                        self.log_yaz(f"Tamamlandı: {tarih_iso} tarihinden {gunluk_indirilen} karar kaydedildi.")
 
-                    print(f"  [+] Kaydedildi: {tarih_iso} | {basvuru_no} -> {yil}/{ay}/{gun}/{dosya_adi}")
-                    time.sleep(random.uniform(0.05, 0.15))
+                self.ilerleme_kaydet(tarih_iso, toplam_indirilen)
 
-                if gunluk_indirilen > 0:
-                    self.log_yaz(f"Tamamlandı: {tarih_iso} tarihinden {gunluk_indirilen} karar kaydedildi.")
+                current_date -= timedelta(days=1)
+                time.sleep(0.05)
 
-            # Her günün sonunda durumu dosyaya yaz
-            self.ilerleme_kaydet(tarih_iso, toplam_indirilen)
-
-            # Bir önceki güne geç
-            current_date -= timedelta(days=1)
-            time.sleep(0.05)
-
-        self.log_yaz(f"[BİLGİ] Arşivleme tamamlandı. Toplam indirilen karar: {toplam_indirilen}")
+            self.log_yaz(f"[BİLGİ] Arşivleme tamamlandı. Toplam indirilen karar: {toplam_indirilen}")
+        except KeyboardInterrupt:
+            self.log_yaz("[UYARI] Kullanıcı tarafından durduruldu (Ctrl+C). RAM'deki ilerleme durumu kaydediliyor...")
+            self.ilerleme_kaydet(self.aktif_tarih or tarih_iso, toplam_indirilen)
+            self.log_yaz(f"[*] İlerleme başarıyla '{self.ilerleme_dosyasi}' dosyasına kaydedildi. Çıkış yapılıyor.")
 
 
 if __name__ == "__main__":
     base_dir = os.path.dirname(os.path.abspath(__file__))
     output_dir = os.path.join(base_dir, "aymjson")
     bot = AnayasaMahkemesiScraper(root_output_dir=output_dir)
-    bot.arsivle()
+    try:
+        bot.arsivle()
+    except KeyboardInterrupt:
+        bot.ilerleme_kaydet(bot.aktif_tarih or datetime.now().strftime("%Y-%m-%d"))
+        sys.exit(0)

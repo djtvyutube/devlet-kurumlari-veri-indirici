@@ -1,75 +1,67 @@
-# Yargıtay Karar Arama Otomasyonu ve Arşivleyici
+# Yargıtay Karar Arama 2.0 Otomasyonu ve Arşivleyici
 
-Bu modül, Yargıtay Karar Arama Portalı (`karararama.yargitay.gov.tr`) üzerinde Selenium ve Chromium kullanarak tarih aralıklı arama sorguları yürüten ve kararları tam metinleriyle birlikte yerel diske arşivleyen otomasyon aracıdır.
+Bu modül, Yargıtay Karar Arama Portalı'nın yenilenen **REST API** altyapısını (`karararama-services.yargitay.gov.tr`) doğrudan kullanarak kararları günümüzden geçmişe doğru gün gün tarayan ve her kararın tam detay yanıtını hiçbir yapısal değişikliğe uğratmadan yerel diske arşivleyen veri toplama aracıdır.
 
 ## Çalışma Mantığı
 
-1. **Tarih Dilimleme (Chunking):**
-   Yargıtay arama arayüzü tek seferde listelenebilecek sonuçlara sınır koyduğu için, arama aralığı varsayılan 5'er günlük dilimlere bölünür. Arama işlemi günümüzden geçmişe doğru kademeli olarak yürütülür.
+1. **REST API 2.0 Doğrudan Erişim ve Saf JSON Kaydı:**
+   - **Günlük Arama (`/api/kararlar`):** `https://karararama-services.yargitay.gov.tr/api/kararlar` uç noktasına `kararTarihiMin` ve `kararTarihiMax` parametreleriyle gün bazında sayfalı (`page`, `size`) `GET` istekleri gönderilir.
+   - **Karar Detayı (`/api/kararlar/karar/{id}`):** Arama sonuçlarında bulunan her kararın benzersiz `id` değeri için doğrudan detay uç noktası sorgulanır.
+   - **Ham Veri Korunumu:** Detay API'sinden dönen JSON yanıtı hiçbir karakter temizliği yapılmadan ve dışarıdan yapay alan eklenmeden birebir API'den geldiği şekliyle diske kaydedilir.
 
-2. **Sayfa İçi JavaScript Otomasyonu:**
-   Detaylı arama formundaki tarih girişleri ve buton tıklamaları Selenium script enjeksiyonu (`execute_script`) ile hızlıca gerçekleştirilir. Sayfadaki DataTables nesnesi doğrudan denetlenir.
+2. **Hiyerarşik Dizinleme (`Yıl/Ay/Gün`):**
+   - İndirilen kararlar `yargitay_arsiv/YYYY/AA/GG/karar_{id}.json` dizin yapısında arşivlenir.
 
-3. **Çift Katmanlı Durum Takibi (SQLite ve Bellek):**
-   - `archive_state.db` SQLite veritabanında `indirilen_kararlar` ve `tamamlanan_araliklar` tabloları tutulur.
-   - İndirilen tüm doküman ID'leri RAM üzerinde bir kümede (set) saklanarak $O(1)$ hızında mükerrerlik denetimi yapılır.
-   - Program kapatılıp tekrar açıldığında tamamlanmış tarih aralıkları atlanır ve kalınan sıra numarasından devam edilir.
+3. **SQLite Tabanlı Durum Takibi ve Disk Senkronizasyonu (`archive_state.db`):**
+   - **`indirilen_kararlar` tablosu:** Başarıyla indirilen her karar anında SQLite veritabanına ve RAM üzerindeki `downloaded_ids` kümesine (set) eklenir; mükerrer indirmeler $O(1)$ hızında engellenir.
+   - **`tamamlanan_gunler` tablosu:** Bir güne ait tüm sayfalar ve kararlar hatasız indirildiğinde ilgili tarih tamamlandı olarak işaretlenir. Kesinti sonrası yeniden başlatmada tamamlanmış günler atlanır.
+   - **`hatali_kararlar` tablosu:** Ağ kesintisi veya sunucu hatası nedeniyle detayı çekilemeyen kararlar yarım/özet veriyle kaydedilmez; bunun yerine `hatali_kararlar` tablosuna işlenir ve tarama başında/sonunda otomatik olarak tekrar denenerek tam detaylarıyla kurtarılır.
+   - **Otomatik Disk-DB Senkronizasyonu:** Başlangıçta çıktı klasörü taranarak diskte mevcut olup veritabanında kaydı bulunmayan `karar_*.json` dosyaları otomatik olarak SQLite'a aktarılır.
 
-4. **Tarayıcı İçi Asenkron Doküman Çekme:**
-   Her kararın tam metni, mevcut oturum çerezleri ve yetkileri korunarak tarayıcı içerisinden `fetch('/getDokuman?id=...')` çağrısıyla çekilir. Böylece oturum düşmesi veya WAF engelleri en aza indirilir.
-
-5. **Hız ve Erişim Sınırı Koruması:**
-   Arama veya doküman çekme esnasında erişim sınırlaması veya güvenlik uyarısı tespit edildiğinde, işlem durdurulup artan sürelerle beklenir.
-
-6. **Yıl Bazlı Dizinleme:**
-   İndirilen kararlar `yargitayjson/YYYY/karar_{global_id}.json` biçiminde hiyerarşik olarak saklanır.
+4. **WAF, Rate Limit (HTTP 429/403) ve Erişim Sınırı Koruması:**
+   - Sunucudan hız sınırı, WAF engeli veya beklenmeyen HTML yanıtı döndüğünde HTTP oturumu otomatik olarak yenilenir (`_renew_session`) ve artan bekleme süreleriyle (exponential backoff) istek tekrarlanır.
 
 ## Gereksinimler
 
 - Python 3.8+
-- Google Chrome veya Chromium
-- `selenium`
+- `requests`
+- `urllib3`
 
 Kurulum:
 ```bash
-pip install selenium
+pip install requests urllib3
 ```
 
 ## Kullanım Parametreleri
 
-Betiği komut satırından çeşitli argümanlarla özelleştirerek çalıştırabilirsiniz:
-
 ```bash
-# Varsayılan ayarlarla (2020'den 2026'ya kadar 5 günlük dilimlerle arka planda) çalıştırma:
+# Varsayılan ayarlarla (Bugünden 1970-01-01'e kadar geriye doğru) çalıştırma:
 python yargitay_indirici.py
 
-# Belirli bir tarih aralığında ve tarayıcıyı ekranda görerek çalıştırma:
-python yargitay_indirici.py --start 01.01.2023 --end 31.12.2023 --chunk-days 3 --gui --output yargitay_2023
+# Belirli bir tarih aralığında ve özel çıktı klasörüyle çalıştırma:
+python yargitay_indirici.py --start 2023-01-01 --end 2023-12-31 --delay 0.25 --page-size 100 --output yargitay_2023
 ```
 
 ### Parametre Açıklamaları
 
-- `--output`: Kararların kaydedileceği ana dizin adı (varsayılan: `yargitayjson`).
-- `--start`: Arama başlangıç tarihi (format: `GG.AA.YYYY`, varsayılan: `01.01.2020`).
-- `--end`: Arama bitiş tarihi (format: `GG.AA.YYYY`, varsayılan: `16.10.2026`).
-- `--chunk-days`: Her arama adımındaki gün sayısı (varsayılan: 5).
-- `--gui`: Başsız (headless) mod yerine tarayıcıyı ekranda görünür açar.
-- `--max`: İndirilecek maksimum toplam karar sayısı sınırı.
+- `--output`: Kararların ve `archive_state.db` veritabanının kaydedileceği ana dizin (varsayılan: `yargitay_arsiv`).
+- `--start`: Arama alt sınır (en eski) tarihi (format: `YYYY-MM-DD`, varsayılan: `1970-01-01`).
+- `--end`: Arama üst sınır (başlangıç/en yeni) tarihi (format: `YYYY-MM-DD`, varsayılan: Bugün).
+- `--delay`: İstekler arası bekleme süresi (saniye, varsayılan: `0.25`).
+- `--page-size`: Sayfa başına çekilecek kayıt sayısı (varsayılan: `100`).
 
-## Çıktı JSON Formatı
+## Çıktı JSON Formatı (`karar_{id}.json`)
 
-Her karar belgesi şu yapıda kaydedilir:
+Her karar belgesi, `/api/kararlar/karar/{id}` uç noktasından dönen ham API yanıtı olarak kaydedilir:
+
 ```json
 {
-  "global_id": 105,
-  "dokuman_id": "987654",
+  "id": "987654321",
   "daire": "1. Ceza Dairesi",
   "esasNo": "2022/100",
   "kararNo": "2023/250",
-  "kararTarihi": "15/02/2023",
-  "kayit_yili_klasoru": "2023",
-  "indirme_zamani": "2026-11-11 10:15:30",
-  "data": { ... }
+  "kararTarihi": "2023-02-15",
+  "icerik": "<html>...T.C. YARGITAY 1. CEZA DAİRESİ...</html>"
 }
 ```
 

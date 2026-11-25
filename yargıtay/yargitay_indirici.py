@@ -1,19 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Yargıtay Karar Arama 2.0 Otomasyonu ve Arşivleyici
+Yargıtay Karar İndirici
 
-Yargıtay'ın yenilenen REST API altyapısını (karararama-services.yargitay.gov.tr) kullanarak:
-- Günümüzden geçmişe doğru gün gün kararları tarar.
-- Hiçbir kararı atlamadan pagination (sayfalama) ile tüm kayıtları alır.
-- Kararın detay içeriğini (/api/kararlar/karar/{id}) apiden geldiği gibi eksiksiz çeker.
-- Her kararı yıl/ay/gün hiyerarşik klasör yapısında (Örn: yargitay_arsiv/2026/11/05/karar_{id}.json)
-  ve API'den gelen orijinal JSON yapısını bozmadan, uydurma alan/kategori eklemeden saklar.
-- SQLite ile durum takibi (checkpointing) yapar, durdurulup tekrar başlatıldığında kaldığı yerden devam eder.
-- Kararlar indirildiği an anında SQLite'a işlenir.
-- İndirilemeyen/hata alan kararları 'hatali_kararlar' tablosuna kaydeder ve periyodik olarak tekrar dener.
-- Başlangıçta diskteki mevcut kararları otomatik tarayıp SQLite'a senkronize eder.
-- Captcha, Cloudflare/WAF, 429 Rate Limit ve erişim sınırı blokajlarına karşı dinamik oturum yenileme ve bekleme koruması içerir.
+karararama-services.yargitay.gov.tr REST API üzerinden kararları gün gün tarar
+ve detay yanıtlarını (/api/kararlar/karar/{id}) ham JSON olarak kaydeder.
 """
 
 import os
@@ -24,22 +15,18 @@ import sqlite3
 import logging
 import argparse
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, Tuple, List
+from typing import Optional, Dict, Any
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 import urllib3
 
-# SSL uyarılarını bastır
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Loglama ayarları
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S"
 )
-logger = logging.getLogger("Yargitay2.0")
+logger = logging.getLogger("Yargitay")
 
 
 class YargitayScraper2:
@@ -55,7 +42,6 @@ class YargitayScraper2:
         delay: float = 0.25,
         page_size: int = 100,
     ):
-        # Script dizinine göre mutlak yol çözümü
         script_dir = os.path.dirname(os.path.abspath(__file__))
         if not os.path.isabs(base_dir):
             self.base_dir = os.path.abspath(os.path.join(script_dir, base_dir))
@@ -67,14 +53,12 @@ class YargitayScraper2:
         self.delay = delay
         self.page_size = page_size
 
-        # Varsayılan bitiş: Bugün
         today = datetime.now()
         if end_date:
             self.end_date = datetime.strptime(end_date, "%Y-%m-%d")
         else:
             self.end_date = today
 
-        # Varsayılan başlangıç: En eski arşivlere kadar (1970)
         if start_date:
             self.start_date = datetime.strptime(start_date, "%Y-%m-%d")
         else:
@@ -83,10 +67,8 @@ class YargitayScraper2:
         self.db_path = os.path.join(self.base_dir, "archive_state.db")
         self.init_db()
 
-        # Oturum yapılandırması
         self.session = self._create_session()
 
-        # Bellek içi indirilenler önbelleği
         self.downloaded_ids = set()
         self._load_existing_ids()
         self._sync_disk_files_to_db()
@@ -103,7 +85,6 @@ class YargitayScraper2:
         return s
 
     def _renew_session(self):
-        """Rate limit, çerez blokajı veya güvenlik duvarında oturumu sıfırlar."""
         try:
             self.session.close()
         except Exception:
@@ -111,9 +92,6 @@ class YargitayScraper2:
         self.session = self._create_session()
 
     def _check_security_block(self, status_code: int, text: str) -> bool:
-        """
-        Gelen yanıtın Captcha, WAF blokajı, IP engeli veya erişim sınırı olup olmadığını tespit eder.
-        """
         if status_code in (403, 429):
             return True
         low = text.lower()
@@ -126,7 +104,6 @@ class YargitayScraper2:
         return any(k in low for k in guvenlik_kelimeleri)
 
     def init_db(self):
-        """SQLite veritabanını ilklendirir."""
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             c.execute("""
@@ -159,7 +136,6 @@ class YargitayScraper2:
             conn.commit()
 
     def _load_existing_ids(self):
-        """Daha önce indirilmiş karar kimliklerini belleğe alır."""
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             c.execute("SELECT id FROM indirilen_kararlar")
@@ -167,7 +143,6 @@ class YargitayScraper2:
                 self.downloaded_ids.add(row[0])
 
     def _sync_disk_files_to_db(self):
-        """Diskte var olup SQLite'a yazılmamış dosyaları tespit edip veritabanına ekler."""
         disk_new = []
         for root, _, files in os.walk(self.base_dir):
             for f in files:
@@ -193,19 +168,17 @@ class YargitayScraper2:
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, disk_new)
                 conn.commit()
-            logger.info(f"Diskteki mevcut dosyalardan {len(disk_new)} adet karar SQLite veritabanına indekslendi.")
+            logger.info(f"Diskteki mevcut dosyalardan {len(disk_new)} adet karar SQLite veritabanına eklendi.")
 
-        logger.info(f"Toplam {len(self.downloaded_ids)} adet benzersiz karar belleğe hazır.")
+        logger.info(f"Toplam {len(self.downloaded_ids)} adet kayıtlı karar bellekte.")
 
     def is_day_completed(self, date_str: str) -> bool:
-        """Günün tamamen taranıp tamamlanmadığını kontrol eder."""
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             c.execute("SELECT 1 FROM tamamlanan_gunler WHERE tarih = ?", (date_str,))
             return c.fetchone() is not None
 
     def mark_day_completed(self, date_str: str, count: int):
-        """Günü tamamlandı olarak kaydeder."""
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             c.execute(
@@ -215,7 +188,6 @@ class YargitayScraper2:
             conn.commit()
 
     def record_failed_decision(self, dec_id: str, date_str: str, reason: str):
-        """İndirilemeyen kararı hata tablosuna kaydeder/günceller."""
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             c.execute("""
@@ -229,14 +201,12 @@ class YargitayScraper2:
             conn.commit()
 
     def remove_failed_decision(self, dec_id: str):
-        """Başarıyla indirilen kararı hata tablosundan siler."""
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             c.execute("DELETE FROM hatali_kararlar WHERE id = ?", (dec_id,))
             conn.commit()
 
     def fetch_search_page(self, date_str: str, page: int) -> Optional[Dict[str, Any]]:
-        """Belirtilen gün ve sayfa için arama sonuçlarını çeker."""
         params = {
             "page": page,
             "size": self.page_size,
@@ -252,14 +222,14 @@ class YargitayScraper2:
                     try:
                         return resp.json()
                     except json.JSONDecodeError:
-                        logger.warning(f"Arama yanıtı JSON değil (HTML döndü). Yeniden deneniyor...")
+                        logger.warning("Arama yanıtı JSON değil. Yeniden deneniyor...")
                         self._renew_session()
                         time.sleep(15)
                         continue
 
                 if self._check_security_block(resp.status_code, resp.text):
                     wait_sec = min(10 * attempt, 60)
-                    logger.warning(f"Arama: Güvenlik/Erişim sınırı algılandı [HTTP {resp.status_code}]. Oturum sıfırlanıyor, {wait_sec}s bekleniyor... (Deneme {attempt}/10)")
+                    logger.warning(f"Arama: Erişim sınırı [HTTP {resp.status_code}]. Oturum yenileniyor, {wait_sec}s bekleniyor... (Deneme {attempt}/10)")
                     self._renew_session()
                     time.sleep(wait_sec)
                     continue
@@ -274,7 +244,6 @@ class YargitayScraper2:
         return None
 
     def fetch_decision_detail(self, decision_id: str) -> Optional[Dict[str, Any]]:
-        """Tek bir kararın tüm detayını çeker."""
         url = f"{self.DETAIL_ENDPOINT}/{decision_id}"
         for attempt in range(1, 10):
             try:
@@ -283,14 +252,14 @@ class YargitayScraper2:
                     try:
                         return resp.json()
                     except json.JSONDecodeError:
-                        logger.warning(f"Detay yanıtı JSON değil. Yeniden deneniyor...")
+                        logger.warning("Detay yanıtı JSON değil. Yeniden deneniyor...")
                         self._renew_session()
                         time.sleep(15)
                         continue
 
                 if self._check_security_block(resp.status_code, resp.text):
                     wait_sec = min(8 * attempt, 60)
-                    logger.warning(f"Detay: Güvenlik/Erişim engeli algılandı ({decision_id}) [HTTP {resp.status_code}]. Oturum sıfırlanıyor, {wait_sec}s bekleniyor... (Deneme {attempt}/10)")
+                    logger.warning(f"Detay: Erişim engeli ({decision_id}) [HTTP {resp.status_code}]. Oturum yenileniyor, {wait_sec}s bekleniyor... (Deneme {attempt}/10)")
                     self._renew_session()
                     time.sleep(wait_sec)
                     continue
@@ -308,10 +277,6 @@ class YargitayScraper2:
         return None
 
     def save_decision(self, raw_data: Dict[str, Any], date_str: str) -> Optional[str]:
-        """
-        API'den gelen veriyi hiçbir format/kategori uydurmadan geldiği gibi
-        yıl/ay/gün yapısındaki klasöre kaydeder.
-        """
         decision_id = raw_data.get("id")
         if not decision_id:
             return None
@@ -340,7 +305,6 @@ class YargitayScraper2:
         return rel_path
 
     def _record_decision_to_db(self, dec_id: str, karar_tarihi: str, y: str, m: str, d: str, saved_path: str):
-        """Tek bir kararı anında SQLite veritabanına işler."""
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             c.execute("""
@@ -351,7 +315,6 @@ class YargitayScraper2:
             conn.commit()
 
     def retry_failed_decisions(self):
-        """Önceki turlarda hata almış kararları tekrar indirmeyi dener."""
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             c.execute("SELECT id, karar_tarihi FROM hatali_kararlar")
@@ -360,7 +323,7 @@ class YargitayScraper2:
         if not failed_rows:
             return
 
-        logger.info(f"Hata tablosundaki {len(failed_rows)} adet başarısız karar yeniden deneniyor...")
+        logger.info(f"Hata tablosundaki {len(failed_rows)} adet karar yeniden deneniyor...")
         for dec_id, date_str in failed_rows:
             if dec_id in self.downloaded_ids:
                 self.remove_failed_decision(dec_id)
@@ -376,11 +339,10 @@ class YargitayScraper2:
                     y, m, d = (parts[0], parts[1], parts[2]) if len(parts) >= 3 else ("", "", "")
                     self._record_decision_to_db(dec_id, karar_tarihi, y, m, d, saved_path)
                     self.remove_failed_decision(dec_id)
-                    logger.info(f"  [KURTARILDI] Hatalı karar başarıyla indirildi: {dec_id}")
+                    logger.info(f"  [KURTARILDI] Hatalı karar indirildi: {dec_id}")
             time.sleep(self.delay)
 
     def process_day(self, date_str: str) -> int:
-        """Belirtilen bir güne ait tüm kararları sayfa sayfa eksiksiz çeker."""
         first_page = self.fetch_search_page(date_str, page=0)
         if not first_page:
             logger.error(f"Günün ilk sayfası alınamadı: {date_str}")
@@ -408,7 +370,7 @@ class YargitayScraper2:
                 time.sleep(3)
                 page_data = self.fetch_search_page(date_str, current_page)
                 if not page_data or "content" not in page_data:
-                    logger.error(f"Sayfa {current_page} atlanmak zorunda kalındı!")
+                    logger.error(f"Sayfa {current_page} atlandı!")
                     has_any_failure = True
                     current_page += 1
                     continue
@@ -424,10 +386,8 @@ class YargitayScraper2:
                 if dec_id in self.downloaded_ids:
                     continue
 
-                # Karar detayını çek (Tam API yanıtı)
                 detail = self.fetch_decision_detail(dec_id)
                 if detail is None:
-                    # Detay çekilemediyse yarım/özet veriyi kaydetme; hatali_kararlar tablosuna yaz ki sonraki turda tam detayı indirilsin
                     logger.warning(f"Karar detayı çekilemedi, hata tablosuna yazılıyor: {dec_id}")
                     self.record_failed_decision(dec_id, date_str, "Detay çekilemedi (HTTP Hata / Timeout)")
                     has_any_failure = True
@@ -448,24 +408,21 @@ class YargitayScraper2:
 
             current_page += 1
 
-        # Eğer o günde hiçbir hata/eksik kalmadıysa günü tamamlandı olarak işaretle
         if not has_any_failure:
             self.mark_day_completed(date_str, saved_count)
-            logger.info(f"{date_str} eksiksiz tamamlandı. ({saved_count} yeni karar kaydedildi | Toplam önbellek: {len(self.downloaded_ids)})")
+            logger.info(f"{date_str} tamamlandı. ({saved_count} yeni karar | Toplam kayıt: {len(self.downloaded_ids)})")
         else:
-            logger.warning(f"{date_str} bazı hatalarla bitti. Gün 'tamamlandı' işaretlenmedi (tekrar çalıştırıldığında eksikler tamamlanacak).")
+            logger.warning(f"{date_str} bazı hatalarla bitti. Tekrar çalıştırıldığında eksikler tamamlanacak.")
 
         return saved_count
 
     def run(self):
-        """Günümüzden geçmişe doğru tüm günleri tarar."""
         logger.info("=" * 60)
-        logger.info("Yargıtay Karar Arama 2.0 İndirici Başlatılıyor")
-        logger.info(f"Tarih Aralığı: {self.end_date.strftime('%Y-%m-%d')} -> {self.start_date.strftime('%Y-%m-%d')} (Günümüzden Geçmişe)")
+        logger.info("Yargıtay Karar İndirici Başlatılıyor")
+        logger.info(f"Tarih Aralığı: {self.end_date.strftime('%Y-%m-%d')} -> {self.start_date.strftime('%Y-%m-%d')}")
         logger.info(f"Kayıt Dizini: {self.base_dir}")
         logger.info("=" * 60)
 
-        # Başlangıçta varsa önceki hatalıları dene
         self.retry_failed_decisions()
 
         current_dt = self.end_date
@@ -485,7 +442,7 @@ class YargitayScraper2:
             try:
                 self.process_day(date_str)
             except KeyboardInterrupt:
-                logger.info("\nKullanıcı tarafından durduruldu. Veriler güvenle kaydedildi.")
+                logger.info("\nKullanıcı tarafından durduruldu.")
                 sys.exit(0)
             except Exception as e:
                 logger.error(f"{date_str} işlenirken hata: {e}", exc_info=True)
@@ -493,18 +450,17 @@ class YargitayScraper2:
 
             current_dt -= timedelta(days=1)
 
-        # Tarama bittiğinde varsa kalan hatalıları son kez dene
         self.retry_failed_decisions()
 
         logger.info("=" * 60)
-        logger.info("Tüm hedeflenen aralık başarıyla tarandı.")
-        logger.info(f"Toplam kaydedilen benzersiz karar: {len(self.downloaded_ids)}")
+        logger.info("Tarama tamamlandı.")
+        logger.info(f"Toplam kaydedilen karar: {len(self.downloaded_ids)}")
         logger.info("=" * 60)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Yargıtay 2.0 Karar Arama ve Arşivleme")
-    parser.add_argument("--output", default="yargitay_arsiv", help="Hedef çıktı klasörü (varsayılan: yargitay_arsiv)")
+    parser = argparse.ArgumentParser(description="Yargıtay Karar İndirici")
+    parser.add_argument("--output", default="yargitay_arsiv", help="Çıktı klasörü (varsayılan: yargitay_arsiv)")
     parser.add_argument("--start", default=None, help="Başlangıç tarihi (YYYY-MM-DD, varsayılan: 1970-01-01)")
     parser.add_argument("--end", default=None, help="Bitiş tarihi (YYYY-MM-DD, varsayılan: Bugün)")
     parser.add_argument("--delay", type=float, default=0.25, help="İstekler arası gecikme (saniye)")

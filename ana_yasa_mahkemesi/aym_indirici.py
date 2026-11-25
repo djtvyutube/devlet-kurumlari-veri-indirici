@@ -1,16 +1,8 @@
 """
-Anayasa Mahkemesi Karar İndirici ve Arşivleyici
+Anayasa Mahkemesi Karar İndirici
 
-Bu modül, Anayasa Mahkemesi Kararlar Bilgi Bankası genel arama API'sini
-kullanarak kararları gün gün tarar; karar detaylarını ve API yanıtlarını
-hiçbir şekillendirme veya düzenleme yapmadan ham JSON formatında yerel diske kaydeder.
-
-Temel Özellikler:
-- Tarih bazlı geriye dönük tarama (varsayılan: günümüzden 1962'ye kadar)
-- Yıl/Ay/Gün şeklinde hiyerarşik dizin yapısı
-- Bağlantı kopmaları ve hız sınırlamalarına (Rate Limit - HTTP 429) karşı otomatik bekleme ve yeniden deneme
-- Kesintiye uğrayan indirme işlemine 'ilerleme_durumu.json' üzerinden kaldığı günden devam edebilme
-- Mükerrer indirmeleri önleyen disk önbellek kontrolü
+Kararlar Bilgi Bankası API'sini gün bazında tarar ve dönen yanıtları
+değiştirmeden ham JSON olarak Yıl/Ay/Gün klasör yapısında diske kaydeder.
 """
 
 import os
@@ -27,15 +19,7 @@ from urllib3.util.retry import Retry
 
 
 class AnayasaMahkemesiScraper:
-    """
-    Anayasa Mahkemesi Bilgi Bankası API'si ile iletişim kuran
-    ve karar verilerini arşivleyen ana sınıf.
-    """
-
     def __init__(self, root_output_dir="aymjson"):
-        """
-        Gerekli dizinleri, oturum ayarlarını ve mevcut dosya önbelleğini hazırlar.
-        """
         self.root_output_dir = os.path.abspath(root_output_dir)
         if not os.path.exists(self.root_output_dir):
             os.makedirs(self.root_output_dir, exist_ok=True)
@@ -54,10 +38,6 @@ class AnayasaMahkemesiScraper:
         self.dosyalar_onbellekle()
 
     def olustur_oturum(self):
-        """
-        Yeniden deneme (retry) kuralları ve bağlantı havuzu tanımlanmış
-        bir requests.Session nesnesi yapılandırır.
-        """
         session = requests.Session()
         session.headers.update({
             "User-Agent": (
@@ -82,10 +62,6 @@ class AnayasaMahkemesiScraper:
         return session
 
     def dosyalar_onbellekle(self):
-        """
-        Daha önce indirilmiş JSON dosyalarının isimlerini tarayarak
-        hafızaya (set) alır. Böylece mükerrer dosya kontrolü hızlıca yapılır.
-        """
         if os.path.exists(self.root_output_dir):
             print("[*] Mevcut dosya arşivi taranıyor...")
             dosya_sayisi = 0
@@ -97,10 +73,6 @@ class AnayasaMahkemesiScraper:
             print(f"[*] Önbelleğe alınan mevcut dosya sayısı: {dosya_sayisi}")
 
     def ilerleme_oku(self):
-        """
-        İlerleme dosyasını kontrol eder; varsa kalınan son tarihi (YYYY-MM-DD) döner
-        ve daha önce kaydedilmiş başarılı/hatalı ID listelerini belleğe yükler.
-        """
         if os.path.exists(self.ilerleme_dosyasi):
             try:
                 with open(self.ilerleme_dosyasi, "r", encoding="utf-8") as f:
@@ -127,9 +99,6 @@ class AnayasaMahkemesiScraper:
         return None
 
     def ilerleme_kaydet(self, tarih_str, indirilen_ekstra=0):
-        """
-        İşlenen son tarihi, toplam dosya adedini, kusursuz inen ve hata veren ID'leri durum dosyasına kaydeder.
-        """
         try:
             gecici_dosya = f"{self.ilerleme_dosyasi}.tmp"
             with open(gecici_dosya, "w", encoding="utf-8") as f:
@@ -147,17 +116,11 @@ class AnayasaMahkemesiScraper:
             pass
 
     def log_yaz(self, mesaj):
-        """
-        Zaman damgalı standart konsol çıktısı üretir.
-        """
         zaman = time.strftime("%H:%M:%S")
         print(f"[{zaman}] {mesaj}")
 
     def temizle_id_degeri(self, raw_id):
-        """
-        API'den dönen karmaşık veya Base64 formatlı ID değerlerini ayrıştırır
-        ve dosya sisteminde kullanılabilecek güvenli bir metne dönüştürür.
-        """
+        """Base64 formatlı (kbb:...) ID değerlerini çözer ve dosya adına uygun hale getirir."""
         if not raw_id:
             return ""
         str_id = str(raw_id).strip()
@@ -184,18 +147,10 @@ class AnayasaMahkemesiScraper:
         return temiz
 
     def dosya_adi_olustur(self, kimlik_degeri):
-        """
-        Verilen kimlik bilgisine göre standart JSON dosya adı üretir.
-        """
         temiz = self.temizle_id_degeri(kimlik_degeri)
         return f"karar_{temiz}.json"
 
     def api_istek_gonder(self, payload, max_deneme=5):
-        """
-        Arama API'sine POST isteği gönderir.
-        429 (Too Many Requests) ve geçici sunucu hatalarında katlanarak artan
-        bekleme süreleriyle yeniden dener.
-        """
         deneme = 0
         while deneme < max_deneme:
             deneme += 1
@@ -218,10 +173,6 @@ class AnayasaMahkemesiScraper:
         return None
 
     def gunun_kararlarini_getir(self, tarih_iso):
-        """
-        Belirtilen güne (YYYY-MM-DD) ait karar özetlerini
-        sayfalama (pagination) mantığıyla API'den toplar.
-        """
         tum_kararlar = []
         page = 1
         page_size = 50
@@ -253,9 +204,6 @@ class AnayasaMahkemesiScraper:
         return tum_kararlar
 
     def karar_detay_getir(self, doc_id, karar_tipi=None):
-        """
-        Karar ID'si ve varsa türü üzerinden kararın detaylı metnini ve künyesini sorgular.
-        """
         clean_id = doc_id
         if doc_id:
             try:
@@ -273,11 +221,6 @@ class AnayasaMahkemesiScraper:
         return self.api_istek_gonder(payload)
 
     def arsivle(self, baslangic_tarihi_str=None, bitis_tarihi_str="1962-01-01"):
-        """
-        Belirlenen başlangıç tarihinden bitiş tarihine kadar geriye doğru
-        tüm günleri tarayarak kararları diskte arşivler.
-        Tarih formatı: YYYY-MM-DD
-        """
         kayitli_son = self.ilerleme_oku()
         if not baslangic_tarihi_str:
             if kayitli_son:
@@ -367,9 +310,9 @@ class AnayasaMahkemesiScraper:
 
             self.log_yaz(f"[BİLGİ] Arşivleme tamamlandı. Toplam indirilen karar: {toplam_indirilen}")
         except KeyboardInterrupt:
-            self.log_yaz("[UYARI] Kullanıcı tarafından durduruldu (Ctrl+C). RAM'deki ilerleme durumu kaydediliyor...")
+            self.log_yaz("[UYARI] Kullanıcı tarafından durduruldu (Ctrl+C). İlerleme durumu kaydediliyor...")
             self.ilerleme_kaydet(self.aktif_tarih or tarih_iso, toplam_indirilen)
-            self.log_yaz(f"[*] İlerleme başarıyla '{self.ilerleme_dosyasi}' dosyasına kaydedildi. Çıkış yapılıyor.")
+            self.log_yaz(f"[*] İlerleme '{self.ilerleme_dosyasi}' dosyasına kaydedildi.")
 
 
 if __name__ == "__main__":

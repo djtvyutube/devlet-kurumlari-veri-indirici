@@ -1,20 +1,8 @@
 """
-Kamu Kurumları Web Siteleri Toplu Rapor ve Belge İndirici
+Kamu Kurumları Belge ve PDF Rapor İndirici
 
-Bu modül, kamu kurumlarının (Sayıştay, bakanlıklar vb.) rapor ve duyuru
-sayfalarını Selenium kullanarak tarar; kategori ve alt kategori sayfalarını dolaşıp
-tespit ettiği PDF rapor dosyalarını yerel diske indirir ve her PDF dosyasının
-nereden geldiğini, ne olduğunu, kategori/sayfa bilgilerini içeren kapsamlı
-üstverilerini (metadata) hem eşlikçi JSON dosyası hem de toplu katalog olarak kaydeder.
-
-Temel Özellikler:
-- Sayfa gezintisi ve dinamik içerik yüklemeleri için headless Chromium desteği
-- Verilen URL'lerdeki '/reports/category/' yapısındaki alt kategorileri otomatik keşfetme
-- Sayfa numaralandırması (pagination) üzerinden sayfaları gezme
-- Her indirilen PDF için kaynak URL, kategori, rapor başlığı, açıklama, tarih, boyut ve SHA-256 özeti içeren metadata kaydı
-- İndirilen dosyaların orijinal adlarını koruyarak yanlarına kategorize edici bilgilerin (kurum, kategori, tarih/rapor bilgisi) eklenmesi
-- Zaman aşımı ve ağ kesintilerine karşı yeniden deneme mekanizması
-- Komut satırı (CLI) üzerinden esnek parametre yönetimi
+Sayıştay ve benzeri kamu sitelerindeki kategori/rapor sayfalarını tarayarak
+PDF dosyalarını ve kaynak/sayfa bilgilerini içeren metadata JSON kayıtlarını indirir.
 """
 
 import argparse
@@ -32,14 +20,12 @@ from selenium.webdriver.common.by import By
 
 
 def metin_temizle(metin):
-    """Fazla boşlukları ve satır sonlarını temizler."""
     if not metin:
         return ""
     return re.sub(r"\s+", " ", str(metin)).strip()
 
 
 def slug_baslik_coz(url):
-    """URL yolundaki slug ifadesinden okunabilir bir başlık/kategori adı üretir."""
     if not url:
         return ""
     path = urllib.parse.urlparse(url).path.strip("/")
@@ -51,10 +37,6 @@ def slug_baslik_coz(url):
 
 
 def dosya_adi_etiketi_temizle(metin, maks_uzunluk=55):
-    """
-    Kategorize edici bilgilerin (kurum, kategori, tarih vb.) dosya adına
-    güvenli ve okunabilir biçimde eklenebilmesi için metni temizler.
-    """
     if not metin:
         return ""
     temiz = metin_temizle(metin)
@@ -66,11 +48,6 @@ def dosya_adi_etiketi_temizle(metin, maks_uzunluk=55):
 
 
 def kategorili_dosya_adi_olustur(orijinal_dosya_adi, pdf_kayit):
-    """
-    Orijinal dosya adını aynı şekilde koruyarak yanına kategorize edici
-    bilgileri (kurum, kategori adı, tespit edilen yıl/tarih) ekler.
-    Örn: orijinal_dosya_adi__[sayistay_gov_tr__Faaliyet_Raporlari__2024].pdf
-    """
     kok, uzanti = os.path.splitext(orijinal_dosya_adi)
     if not uzanti:
         uzanti = ".pdf"
@@ -98,17 +75,12 @@ def kategorili_dosya_adi_olustur(orijinal_dosya_adi, pdf_kayit):
 
 
 def sayfa_metadatasini_cikar(driver):
-    """
-    Açık olan detay sayfasından raporun ne olduğunu belirten başlık, açıklama,
-    yayın tarihi ve meta etiketlerini ayıklar.
-    """
     sayfa_basligi = metin_temizle(driver.title)
     ana_baslik = ""
     aciklama = ""
     yayin_tarihi = ""
     meta_etiketleri = {}
 
-    # 1. h1 / h2 başlıklarını kontrol et
     for tag in ("h1", "h2", "h3"):
         try:
             elems = driver.find_elements(By.TAG_NAME, tag)
@@ -122,7 +94,6 @@ def sayfa_metadatasini_cikar(driver):
         except Exception:
             pass
 
-    # 2. Sayfadaki meta etiketlerini (og:title, description, date vb.) topla
     try:
         metas = driver.find_elements(By.TAG_NAME, "meta")
         for m in metas:
@@ -147,7 +118,6 @@ def sayfa_metadatasini_cikar(driver):
     if not ana_baslik:
         ana_baslik = meta_etiketleri.get("og:title") or sayfa_basligi
 
-    # 3. Açıklama / özet metni çıkar
     try:
         p_elems = driver.find_elements(By.TAG_NAME, "p")
         paragraflar = []
@@ -165,7 +135,6 @@ def sayfa_metadatasini_cikar(driver):
     if not aciklama:
         aciklama = meta_etiketleri.get("description") or meta_etiketleri.get("og:description") or ""
 
-    # 4. Tarih bilgisi ara (time etiketi veya metin içi tarih deseni)
     try:
         time_elems = driver.find_elements(By.TAG_NAME, "time")
         for t_el in time_elems:
@@ -198,11 +167,6 @@ def sayfa_metadatasini_cikar(driver):
 
 
 def raporlari_tara_ve_indir(url_listesi, toplam_sayfa, cikti_klasoru):
-    """
-    Belirtilen ana kategori URL'lerini ve alt kategorilerini tarayarak
-    bulunan tüm rapor detay sayfalarından PDF dosyalarını ve nereden geldiğini/ne olduğunu
-    gösteren metadata JSON kayıtlarını çeker.
-    """
     if not os.path.exists(cikti_klasoru):
         os.makedirs(cikti_klasoru, exist_ok=True)
         print(f"[*] Çıktı klasörü oluşturuldu: {cikti_klasoru}")
@@ -217,11 +181,9 @@ def raporlari_tara_ve_indir(url_listesi, toplam_sayfa, cikti_klasoru):
     )
 
     driver = webdriver.Chrome(options=chrome_options)
-    # kategori_url -> {"ana_kaynak_url": ..., "kategori_adi": ...}
     taranacak_kategoriler = {}
 
     try:
-        # 1. Aşama: Ana sayfalardan alt kategorilerin keşfi
         for ana_url in url_listesi:
             if not ana_url.startswith("http://") and not ana_url.startswith("https://"):
                 ana_url = "https://" + ana_url
@@ -255,8 +217,6 @@ def raporlari_tara_ve_indir(url_listesi, toplam_sayfa, cikti_klasoru):
             "belirlendi. Raporlar taranıyor..."
         )
 
-        # 2. Aşama: Kategori sayfalarındaki rapor bağlantılarının ve kaynak bilgilerinin taranması
-        # rapor_url -> kaynak/kategori metadata sözlüğü
         rapor_kayitlari = {}
         for kat_url, kat_bilgi in taranacak_kategoriler.items():
             for sayfa in range(1, toplam_sayfa + 1):
@@ -309,12 +269,10 @@ def raporlari_tara_ve_indir(url_listesi, toplam_sayfa, cikti_klasoru):
                     print(f"  [-] Kategori taranamadı ({kat_url}): {e}")
 
         print(
-            f"\n[*] Toplam {len(rapor_kayitlari)} adet benzersiz rapor detay sayfası "
-            "bulundu. Doğrudan PDF bağlantıları ve sayfa üstverileri (metadata) toplanıyor..."
+            f"\n[*] Toplam {len(rapor_kayitlari)} adet rapor detay sayfası "
+            "bulundu. PDF bağlantıları ve sayfa bilgileri toplanıyor..."
         )
 
-        # 3. Aşama: Rapor detay sayfalarından doğrudan PDF indirme bağlantılarının ve sayfa metadatasının ayıklanması
-        # pdf_url -> birleştirilmiş metadata kaydı
         gercek_pdf_kayitlari = []
         gorulen_pdf_urls = set()
 
@@ -361,8 +319,8 @@ def raporlari_tara_ve_indir(url_listesi, toplam_sayfa, cikti_klasoru):
             except Exception as e:
                 print(f"  [-] Detay sayfası okunamadı: {e}")
 
-        print(f"\n[*] Toplam {len(gercek_pdf_kayitlari)} adet PDF bağlantısı ve metadatası tespit edildi.")
-        print("[*] İndirme ve metadata kayıt işlemleri başlatılıyor...\n")
+        print(f"\n[*] Toplam {len(gercek_pdf_kayitlari)} adet PDF bağlantısı tespit edildi.")
+        print("[*] İndirme işlemi başlatılıyor...\n")
 
         headers = {
             "User-Agent": (
@@ -371,7 +329,6 @@ def raporlari_tara_ve_indir(url_listesi, toplam_sayfa, cikti_klasoru):
             )
         }
 
-        # 4. Aşama: PDF dosyalarını ve eşlikçi metadata JSON dosyalarını diske kaydetme
         indirilen = 0
         tum_metadatalar = []
         kullanilan_dosya_adlari = set()
@@ -389,7 +346,6 @@ def raporlari_tara_ve_indir(url_listesi, toplam_sayfa, cikti_klasoru):
             orijinal_dosya_adi = raw_filename
             kategorili_isim = kategorili_dosya_adi_olustur(orijinal_dosya_adi, pdf_kayit)
 
-            # Dosya adı çakışmasını önle
             filename = kategorili_isim
             if filename in kullanilan_dosya_adlari:
                 kok, uzanti = os.path.splitext(kategorili_isim)
@@ -400,7 +356,6 @@ def raporlari_tara_ve_indir(url_listesi, toplam_sayfa, cikti_klasoru):
             metadata_dosya_adi = f"{filename}.metadata.json"
             metadata_dosya_yolu = os.path.join(cikti_klasoru, metadata_dosya_adi)
 
-            # Eğer PDF ve metadata dosyası zaten diskte mevcutsa mükerrer indirmeyi atla
             if os.path.exists(dosya_yolu) and os.path.exists(metadata_dosya_yolu):
                 try:
                     with open(metadata_dosya_yolu, "r", encoding="utf-8") as mf:
@@ -468,7 +423,7 @@ def raporlari_tara_ve_indir(url_listesi, toplam_sayfa, cikti_klasoru):
 
                     tum_metadatalar.append(tam_metadata)
                     indirilen += 1
-                    print(f"    -> Başarıyla kaydedildi: {filename} (+ {metadata_dosya_adi})")
+                    print(f"    -> Kaydedildi: {filename} (+ {metadata_dosya_adi})")
                     break
                 except Exception as e:
                     print(f"    -> Hata oluştu: {e}")
@@ -477,7 +432,6 @@ def raporlari_tara_ve_indir(url_listesi, toplam_sayfa, cikti_klasoru):
                     else:
                         print(f"    -> {filename} indirilemedi, atlanıyor.")
 
-        # Tüm indirilen dosyaların toplu metadata indeksini kaydet
         katalog_yolu = os.path.join(cikti_klasoru, "indirilen_dosyalar_metadata.json")
         with open(katalog_yolu, "w", encoding="utf-8") as kf:
             json.dump(
@@ -506,21 +460,12 @@ def raporlari_tara_ve_indir(url_listesi, toplam_sayfa, cikti_klasoru):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description=(
-            "Sayıştay ve benzeri kamu sitelerinden çoklu URL desteği ve "
-            "alt kategori taramasıyla otomatik PDF rapor ve metadata indirme aracı."
-        ),
+        description="Sayıştay ve benzeri kamu sitelerinden PDF rapor ve metadata indirme aracı.",
         formatter_class=argparse.RawTextHelpFormatter,
         epilog=(
-            "KULLANIM ÖRNEKLERİ:\n"
-            "  1) Tek kategori ile indirme:\n"
-            "     python dosya_indirici.py -u https://www.sayistay.gov.tr/reports/category/13-faaliyet-genel-degerlendirme-raporlari -s 2 -o faaliyetler\n\n"
-            "  2) Birden fazla adresi aynı anda tarama:\n"
-            "     python dosya_indirici.py -u url1 url2 -s 3 -o indirilen_raporlar\n\n"
-            "PARAMETRELER:\n"
-            "  -u, --urls   : Taranacak web sitelerinin adresleri (boşluk bırakılarak birden fazla verilebilir)\n"
-            "  -s, --sayfa  : Her kategori için taranacak maksimum sayfa sayısı (varsayılan: 1)\n"
-            "  -o, --cikti  : PDF ve metadata dosyalarının kaydedileceği hedef dizin (varsayılan: indirilen_pdfler)\n"
+            "Örnek kullanım:\n"
+            "  python dosya_indirici.py -u https://www.sayistay.gov.tr/reports/category/13-faaliyet-genel-degerlendirme-raporlari -s 2 -o faaliyetler\n"
+            "  python dosya_indirici.py -u url1 url2 -s 3 -o indirilen_raporlar\n"
         ),
     )
 
@@ -529,7 +474,7 @@ if __name__ == "__main__":
         "--urls",
         nargs="+",
         required=True,
-        help="Taranacak bir veya daha fazla sayfa adresi (boşlukla ayırarak giriniz)"
+        help="Taranacak sayfa adresleri"
     )
     parser.add_argument(
         "-s",

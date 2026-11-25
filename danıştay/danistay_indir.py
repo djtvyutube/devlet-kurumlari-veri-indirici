@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Danıştay Karar İndirici ve Arşivleyici 2.0 (Yeni Bedesten/UYAP API Uyumlu)
+Danıştay Karar İndirici (UYAP / Bedesten API)
 
-Özellikler:
-- https://karararama.danistay.gov.tr yeni portalının kullandığı UYAP/Bedesten API'sini doğrudan kullanır.
-- Günümüzden geçmişe doğru gün gün kararları teker teker atlama yapmadan çeker.
-- Her kararın ham arama künyesini ve ham detay yanıtını (getDocContent) dışarıdan hiçbir yapay alan eklemeden saf JSON olarak kaydeder.
-- Klasör yapısı: {yil}/{ay}/{gun}/karar_{documentId}.json
-- SQLite (archive_state.db) ile anlık checkpointing yapar; her karar indiği an veritabanına işlenir.
-- Otomatik Disk-DB senkronizasyonu ile daha önce inmiş dosyaları tespit eder, mükerrer indirmeyi engeller.
-- WAF, Cloudflare, 403, 429 Rate Limit ve Captcha tespitinde otomatik oturum sıfırlama ve kademeli bekleme (backoff).
-- Hatalı/indirilemeyen kararları 'hatali_kararlar' tablosuna kaydeder ve otomatik olarak tekrar dener.
+karararama.danistay.gov.tr (bedesten.adalet.gov.tr) üzerinden gün gün kararları
+tarar; arama künyesini ve getDocContent yanıtını ham JSON olarak kaydeder.
 """
 
 import os
@@ -23,20 +16,18 @@ import sqlite3
 import logging
 import argparse
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, Tuple
 import requests
 import urllib3
 
-# SSL uyarılarını bastır
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Loglama ayarları
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S"
 )
-logger = logging.getLogger("Danistay2.0")
+logger = logging.getLogger("Danistay")
 
 
 class DanistayScraper2:
@@ -95,7 +86,6 @@ class DanistayScraper2:
         return s
 
     def _renew_session(self):
-        """Rate limit veya engel durumunda temiz bir oturum başlatır."""
         try:
             self.session.close()
         except Exception:
@@ -103,7 +93,6 @@ class DanistayScraper2:
         self.session = self._create_session()
 
     def _check_security_block(self, status_code: int, text: str) -> bool:
-        """Gelen yanıtın Captcha, WAF blokajı, IP engeli veya erişim sınırı olup olmadığını tespit eder."""
         if status_code in (403, 429):
             return True
         low = text.lower()
@@ -116,7 +105,6 @@ class DanistayScraper2:
         return any(k in low for k in guvenlik_kelimeleri)
 
     def init_db(self):
-        """SQLite veritabanını ilklendirir."""
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             c.execute("""
@@ -154,7 +142,6 @@ class DanistayScraper2:
             conn.commit()
 
     def _load_existing_ids(self):
-        """Daha önce indirilmiş karar kimliklerini belleğe alır."""
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             c.execute("SELECT id FROM indirilen_kararlar")
@@ -162,7 +149,6 @@ class DanistayScraper2:
                 self.downloaded_ids.add(str(row[0]))
 
     def _sync_disk_files_to_db(self):
-        """Diskte var olup SQLite'a yazılmamış dosyaları tespit edip veritabanına ekler."""
         disk_new = []
         for root, _, files in os.walk(self.base_dir):
             for f in files:
@@ -188,19 +174,17 @@ class DanistayScraper2:
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, disk_new)
                 conn.commit()
-            logger.info(f"Diskteki mevcut dosyalardan {len(disk_new)} adet karar SQLite veritabanına indekslendi.")
+            logger.info(f"Diskteki mevcut dosyalardan {len(disk_new)} adet karar SQLite veritabanına eklendi.")
 
-        logger.info(f"Toplam {len(self.downloaded_ids)} adet benzersiz karar belleğe hazır.")
+        logger.info(f"Toplam {len(self.downloaded_ids)} adet kayıtlı karar bellekte.")
 
     def is_day_completed(self, date_str: str) -> bool:
-        """Günün tamamen taranıp tamamlanmadığını kontrol eder."""
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             c.execute("SELECT 1 FROM tamamlanan_gunler WHERE tarih = ?", (date_str,))
             return c.fetchone() is not None
 
     def mark_day_completed(self, date_str: str, count: int):
-        """Günü tamamlandı olarak kaydeder."""
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             c.execute(
@@ -210,7 +194,6 @@ class DanistayScraper2:
             conn.commit()
 
     def record_decision_to_db(self, dec_id: str, date_str: str, y: str, m: str, d: str, file_path: str):
-        """İndirilen kararı anında veritabanına ve belleğe yazar."""
         self.downloaded_ids.add(str(dec_id))
         rel_path = os.path.relpath(file_path, self.base_dir)
         with sqlite3.connect(self.db_path) as conn:
@@ -223,7 +206,6 @@ class DanistayScraper2:
             conn.commit()
 
     def record_failed_decision(self, dec_id: str, date_str: str, reason: str, karar_obj: Optional[Dict[str, Any]] = None):
-        """İndirilemeyen kararı ve orijinal arama künyesini hata tablosuna kaydeder/günceller."""
         kunye_json = json.dumps(karar_obj, ensure_ascii=False) if karar_obj else None
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
@@ -239,29 +221,19 @@ class DanistayScraper2:
             conn.commit()
 
     def remove_failed_decision(self, dec_id: str):
-        """Başarıyla indirilen kararı hata tablosundan siler."""
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             c.execute("DELETE FROM hatali_kararlar WHERE id = ?", (str(dec_id),))
             conn.commit()
 
     def _gunluk_tarih_utc(self, dt: datetime):
-        """
-        Belirtilen gün için UTC başlangıç ve bitiş ISO dizgilerini oluşturur.
-        Danıştay portalı Türkiye saati (UTC+3) ile sorgulama yapar.
-        Günün başlangıcı: (dt - 1 gün) 21:00:00.000Z
-        Günün bitişi: dt 20:59:59.999Z
-        """
+        """Türkiye saatine (UTC+3) göre günün UTC başlangıç ve bitiş zamanlarını üretir."""
         prev_day = dt - timedelta(days=1)
         start_utc = prev_day.strftime("%Y-%m-%dT21:00:00.000Z")
         end_utc = dt.strftime("%Y-%m-%dT20:59:59.999Z")
         return start_utc, end_utc
 
     def fetch_search_page(self, dt: datetime, current_page: int) -> Tuple[bool, Optional[Dict[str, Any]]]:
-        """
-        Belirli bir gün ve sayfa için arama sonuçlarını çeker.
-        Dönüş: (basarili_mi, api_response)
-        """
         start_utc, end_utc = self._gunluk_tarih_utc(dt)
         payload = {
             "data": {
@@ -293,8 +265,8 @@ class DanistayScraper2:
                 if self._check_security_block(resp.status_code, resp.text):
                     bekleme = min(60, 8 * attempt)
                     logger.warning(
-                        f"Arama: Güvenlik/Erişim sınırı algılandı [HTTP {resp.status_code}] ({date_str} sf {current_page}). "
-                        f"Oturum sıfırlanıyor, {bekleme}s bekleniyor... (Deneme {attempt}/10)"
+                        f"Arama: Erişim sınırı [HTTP {resp.status_code}] ({date_str} sf {current_page}). "
+                        f"Oturum yenileniyor, {bekleme}s bekleniyor... (Deneme {attempt}/10)"
                     )
                     self._renew_session()
                     time.sleep(bekleme)
@@ -303,8 +275,8 @@ class DanistayScraper2:
                 if "json" not in resp.headers.get("Content-Type", ""):
                     bekleme = min(60, 10 * attempt)
                     logger.warning(
-                        f"Arama: Beklenmeyen yanıt/HTML içerik ({date_str} sf {current_page}). "
-                        f"Oturum sıfırlanıyor, {bekleme}s bekleniyor... (Deneme {attempt}/10)"
+                        f"Arama: JSON olmayan yanıt ({date_str} sf {current_page}). "
+                        f"Oturum yenileniyor, {bekleme}s bekleniyor... (Deneme {attempt}/10)"
                     )
                     self._renew_session()
                     time.sleep(bekleme)
@@ -326,10 +298,6 @@ class DanistayScraper2:
         return False, None
 
     def fetch_decision_detail(self, doc_id: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
-        """
-        Belirtilen documentId için getDocContent API yanıtını çeker.
-        Hiçbir filtreleme veya değişiklik yapmadan ham API nesnesini döndürür.
-        """
         payload = {"data": {"documentId": str(doc_id)}}
 
         for attempt in range(1, 11):
@@ -338,8 +306,8 @@ class DanistayScraper2:
                 if self._check_security_block(resp.status_code, resp.text):
                     bekleme = min(60, 6 * attempt)
                     logger.warning(
-                        f"Detay: Güvenlik/Erişim sınırı [HTTP {resp.status_code}] (ID: {doc_id}). "
-                        f"Oturum sıfırlanıyor, {bekleme}s bekleniyor... (Deneme {attempt}/10)"
+                        f"Detay: Erişim sınırı [HTTP {resp.status_code}] (ID: {doc_id}). "
+                        f"Oturum yenileniyor, {bekleme}s bekleniyor... (Deneme {attempt}/10)"
                     )
                     self._renew_session()
                     time.sleep(bekleme)
@@ -348,8 +316,8 @@ class DanistayScraper2:
                 if "json" not in resp.headers.get("Content-Type", ""):
                     bekleme = min(60, 8 * attempt)
                     logger.warning(
-                        f"Detay: Beklenmeyen içerik/HTML (ID: {doc_id}). "
-                        f"Oturum sıfırlanıyor, {bekleme}s bekleniyor... (Deneme {attempt}/10)"
+                        f"Detay: JSON olmayan yanıt (ID: {doc_id}). "
+                        f"Oturum yenileniyor, {bekleme}s bekleniyor... (Deneme {attempt}/10)"
                     )
                     self._renew_session()
                     time.sleep(bekleme)
@@ -360,7 +328,7 @@ class DanistayScraper2:
                     if isinstance(res, dict) and "data" in res and res.get("data") is not None:
                         return True, res
                     else:
-                        logger.warning(f"Detay: API verisi boş veya eksik (ID: {doc_id}): {res}")
+                        logger.warning(f"Detay: API verisi boş (ID: {doc_id}): {res}")
 
                 time.sleep(1 + attempt)
             except Exception as e:
@@ -371,10 +339,6 @@ class DanistayScraper2:
         return False, None
 
     def save_decision_file(self, karar_obj: Optional[Dict[str, Any]], detay_obj: Dict[str, Any], date_str: str, doc_id_fallback: str = "") -> Optional[str]:
-        """
-        Kararı yıl/ay/gün hiyerarşisinde JSON formatında kaydeder.
-        detay.data.content alanının altına Base64'ten çözülmüş metni (content_html) ekler.
-        """
         doc_id = str((karar_obj or {}).get("documentId") or doc_id_fallback)
         parts = date_str.split("-") if date_str and "-" in date_str else []
         if len(parts) >= 3 and parts[0].isdigit():
@@ -386,7 +350,6 @@ class DanistayScraper2:
         os.makedirs(folder, exist_ok=True)
         file_path = os.path.join(folder, f"karar_{doc_id}.json")
 
-        # Base64 content alanını çözüp doğrudan detay.data altına ekle
         if isinstance(detay_obj, dict):
             data_sec = detay_obj.get("data")
             if isinstance(data_sec, dict) and "content" in data_sec:
@@ -412,7 +375,6 @@ class DanistayScraper2:
         return file_path
 
     def retry_failed_decisions(self):
-        """Daha önce hata almış kararları orijinal arama künyesiyle yeniden dener."""
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
             c.execute("SELECT id, karar_tarihi, arama_kunyesi FROM hatali_kararlar ORDER BY deneme_sayisi ASC")
@@ -437,13 +399,12 @@ class DanistayScraper2:
             success, detail = self.fetch_decision_detail(dec_id)
             if success and detail:
                 self.save_decision_file(karar_obj, detail, k_tarihi or "", doc_id_fallback=str(dec_id))
-                logger.info(f"Hatalı karar kurtarıldı ve kaydedildi: {dec_id}")
+                logger.info(f"Hatalı karar kurtarıldı: {dec_id}")
             time.sleep(self.delay)
 
     def scrape(self, max_karar: Optional[int] = None):
-        """Gün gün geriye doğru tarama yürütür."""
         logger.info("=" * 70)
-        logger.info("Danıştay Karar İndirici 2.0 Başlatıldı")
+        logger.info("Danıştay Karar İndirici Başlatıldı")
         logger.info(f"Tarih Aralığı: {self.end_date.strftime('%Y-%m-%d')} -> {self.start_date.strftime('%Y-%m-%d')}")
         logger.info(f"Hedef Arşiv: {self.base_dir}")
         logger.info("=" * 70)
@@ -474,7 +435,7 @@ class DanistayScraper2:
             while True:
                 success, search_resp = self.fetch_search_page(current_dt, page)
                 if not success:
-                    logger.error(f"[DURDURMA] {date_str} sayfası {page} güvenlik duvarı veya bağlantı hatası nedeniyle çekilemedi. İşlem güvenle durduruldu.")
+                    logger.error(f"[DURDURMA] {date_str} sayfası {page} çekilemedi. İşlem durduruldu.")
                     return
 
                 veri = search_resp.get("data", {})
@@ -483,7 +444,7 @@ class DanistayScraper2:
 
                 if total_in_day == 0 or not karar_listesi:
                     if page == 1:
-                        logger.info(f"{date_str}: Sistemde bu tarihe ait karar bulunamadı (0 karar).")
+                        logger.info(f"{date_str}: Bu tarihe ait karar bulunamadı (0 karar).")
                     break
 
                 day_records_count = total_in_day
@@ -528,7 +489,7 @@ class DanistayScraper2:
 
             if day_success:
                 self.mark_day_completed(date_str, day_records_count)
-                logger.info(f"{date_str} başarıyla tamamlandı. ({day_total_saved} yeni karar kaydedildi)")
+                logger.info(f"{date_str} tamamlandı. ({day_total_saved} yeni karar kaydedildi)")
             else:
                 logger.warning(f"{date_str} bazı hatalı kararlar nedeniyle tam tamamlanamadı. Sonraki çalışmada tekrar denenecek.")
 
@@ -537,14 +498,14 @@ class DanistayScraper2:
 
         self.retry_failed_decisions()
         logger.info("\n" + "=" * 70)
-        logger.info(f"Arşivleme tamamlandı. Bu oturumda indirilen toplam yeni karar: {total_downloaded}")
+        logger.info(f"Arşivleme tamamlandı. İndirilen toplam yeni karar: {total_downloaded}")
         logger.info("=" * 70)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Danıştay Karar İndirici 2.0")
-    parser.add_argument("--start", type=str, help="Başlangıç tarihi (YYYY-AA-GG), örn: 2026-08-25")
-    parser.add_argument("--end", type=str, help="Bitiş tarihi (YYYY-AA-GG), örn: 2026-11-25")
+    parser = argparse.ArgumentParser(description="Danıştay Karar İndirici")
+    parser.add_argument("--start", type=str, help="Başlangıç tarihi (YYYY-AA-GG)")
+    parser.add_argument("--end", type=str, help="Bitiş tarihi (YYYY-AA-GG)")
     parser.add_argument("--limit", type=int, help="Maksimum indirilecek karar sayısı")
     parser.add_argument("--delay", type=float, default=0.25, help="İstekler arası bekleme (sn)")
     parser.add_argument("--dir", type=str, default="danistay_arsiv", help="Kayıt klasörü")
@@ -561,7 +522,7 @@ def main():
     try:
         scraper.scrape(max_karar=args.limit)
     except KeyboardInterrupt:
-        logger.info("\nKullanıcı tarafından durduruldu. Veriler güvenle kaydedildi.")
+        logger.info("\nKullanıcı tarafından durduruldu.")
 
 
 if __name__ == "__main__":

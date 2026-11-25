@@ -1,10 +1,8 @@
 """
 Anayasa Mahkemesi Hatalı / Eksik Karar İndirici
 
-Bu modül, 'ilerleme_durumu.json' dosyasında biriken 'hatali_idler' listesindeki
-indirilememiş kararları tekrar sorgular, kararın tarihini ve benzersiz ID'sini
-API yanıtından çıkararak ilgili Yıl/Ay/Gün klasörüne ham JSON olarak kaydeder ve
-başarıyla inenleri 'hatali_idler' listesinden düşüp 'basarili_idler' listesine ekler.
+ilerleme_durumu.json içindeki hatali_idler listesinde kalan kararları
+yeniden sorgular ve inenleri ilgili Yıl/Ay/Gün klasörüne ham JSON olarak kaydeder.
 """
 
 import os
@@ -21,11 +19,6 @@ from urllib3.util.retry import Retry
 
 
 class AnayasaMahkemesiHataliIndirici:
-    """
-    ilerleme_durumu.json içindeki hatali_idler listesini tarayıp
-    eksik kararları indiren ve durumu güncelleyen sınıf.
-    """
-
     def __init__(self, root_output_dir="aymjson"):
         self.root_output_dir = os.path.abspath(root_output_dir)
         self.ilerleme_dosyasi = os.path.join(self.root_output_dir, "ilerleme_durumu.json")
@@ -42,9 +35,6 @@ class AnayasaMahkemesiHataliIndirici:
         self.dosyalar_onbellekle()
 
     def olustur_oturum(self):
-        """
-        Yeniden deneme (retry) kuralları tanımlanmış requests.Session nesnesi oluşturur.
-        """
         session = requests.Session()
         session.headers.update({
             "User-Agent": (
@@ -80,9 +70,6 @@ class AnayasaMahkemesiHataliIndirici:
                         self.mevcut_dosyalar.add(file)
 
     def ilerleme_oku(self):
-        """
-        ilerleme_durumu.json dosyasını okur ve hatali_idler ile basarili_idler listelerini yükler.
-        """
         if not os.path.exists(self.ilerleme_dosyasi):
             self.log_yaz(f"[HATA] İlerleme dosyası bulunamadı: {self.ilerleme_dosyasi}")
             return False
@@ -110,9 +97,6 @@ class AnayasaMahkemesiHataliIndirici:
         return self.ilerleme_oku()
 
     def ilerleme_kaydet(self):
-        """
-        Güncellenen başarılı ve hatalı ID listelerini ilerleme_durumu.json dosyasına yazar.
-        """
         try:
             son_tarih = self.ilerleme_verisi.get("son_tarih")
             guncel_veri = {
@@ -162,10 +146,6 @@ class AnayasaMahkemesiHataliIndirici:
         return f"karar_{temiz}.json"
 
     def tarih_ayristir(self, item, raw_id):
-        """
-        API yanıtındaki karar objesinden (kararTarihi vb.) Yıl, Ay, Gün bilgilerini çıkarır.
-        Tarih bulunamazsa 'hatali_kurtarilan' klasörünü döner.
-        """
         olasi_alanlar = ["kararTarihi", "kararTarih", "basvuruTarihi", "resmiGazeteTarihi", "tarih"]
         tarih_degeri = None
 
@@ -177,12 +157,10 @@ class AnayasaMahkemesiHataliIndirici:
                     break
 
         if tarih_degeri:
-            # YYYY-MM-DD veya YYYY-MM-DDTHH:MM:SS formatı
             iso_eslesme = re.match(r"^(\d{4})-(\d{2})-(\d{2})", tarih_degeri)
             if iso_eslesme:
                 return iso_eslesme.group(1), iso_eslesme.group(2), iso_eslesme.group(3)
 
-            # DD.MM.YYYY veya DD/MM/YYYY formatı
             tr_eslesme = re.match(r"^(\d{2})[./](\d{2})[./](\d{4})", tarih_degeri)
             if tr_eslesme:
                 return tr_eslesme.group(3), tr_eslesme.group(2), tr_eslesme.group(1)
@@ -220,7 +198,6 @@ class AnayasaMahkemesiHataliIndirici:
         if yanit and isinstance(yanit, dict) and yanit.get("data"):
             return yanit
 
-        # Eğer temizlenmiş ID ile bulunamadıysa ham ID ile de dene
         if doc_id != clean_id:
             payload["id"] = doc_id
             yanit = self.api_istek_gonder(payload)
@@ -230,9 +207,6 @@ class AnayasaMahkemesiHataliIndirici:
         return None
 
     def hatali_kararlari_indir(self):
-        """
-        ilerleme_durumu.json içerisindeki hatali_idler listesini tek tek indirir.
-        """
         if not self.ilerleme_oku():
             return
 
@@ -290,9 +264,9 @@ class AnayasaMahkemesiHataliIndirici:
                 f"Hala Hatalı: {hala_hatali_sayisi} | Kalan Hatalı ID: {len(self.hatali_idler)}"
             )
         except KeyboardInterrupt:
-            self.log_yaz("[UYARI] Kullanıcı tarafından durduruldu (Ctrl+C). RAM'deki ilerleme durumu kaydediliyor...")
+            self.log_yaz("[UYARI] Kullanıcı tarafından durduruldu (Ctrl+C). İlerleme durumu kaydediliyor...")
             self.ilerleme_kaydet()
-            self.log_yaz(f"[*] İlerleme başarıyla '{self.ilerleme_dosyasi}' dosyasına kaydedildi. Çıkış yapılıyor.")
+            self.log_yaz(f"[*] İlerleme '{self.ilerleme_dosyasi}' dosyasına kaydedildi.")
 
 
 if __name__ == "__main__":

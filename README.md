@@ -9,20 +9,20 @@ Yargı kararı indiricileri (`ana_yasa_mahkemesi`, `danıştay`, `yargıtay`) ku
 ```text
 devlet-kurumlari-veri-indirici/
 ├── ana_yasa_mahkemesi/
-│   ├── aym_indirici.py          # AYM günlük karar indirici
-│   ├── aym_hatali_indirici.py   # Hata veren AYM kararlarını tekrar indirme betiği
+│   ├── aym_indirici.py
+│   ├── aym_hatali_indirici.py
 │   └── README.md
 ├── belge_indirici/
-│   ├── dosya_indirici.py        # Sayıştay ve kamu siteleri PDF rapor indirici
+│   ├── dosya_indirici.py
 │   └── README.md
 ├── danıştay/
-│   ├── danistay_indir.py        # Danıştay (Bedesten API) günlük karar indirici
+│   ├── danistay_indir.py
 │   └── README.md
 ├── mevzuat/
-│   ├── mevzuat_indirici.py      # mevzuat.gov.tr HTML/PDF indirici (Alperen Enes Bayar)
+│   ├── mevzuat_indirici.py
 │   └── README.md
 ├── yargıtay/
-│   ├── yargitay_indirici.py     # Yargıtay REST API günlük karar indirici
+│   ├── yargitay_indirici.py
 │   └── README.md
 ├── requirements.txt
 ├── .gitignore

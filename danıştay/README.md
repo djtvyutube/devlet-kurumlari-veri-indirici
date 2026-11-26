@@ -15,13 +15,10 @@ Danıştay Karar Arama portalının kullandığı Bedesten API (`bedesten.adalet
 ```bash
 pip install requests urllib3
 
-# Varsayılan (Bugünden 1970-01-01'e kadar)
 python danistay_indir.py
 
-# Tarih aralığı ve klasör belirterek
 python danistay_indir.py --start 2024-01-01 --end 2024-12-31 --delay 0.3 --dir danistay_2024
 
-# İndirme limiti belirterek
 python danistay_indir.py --limit 500
 ```
 

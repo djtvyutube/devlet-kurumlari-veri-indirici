@@ -15,16 +15,12 @@ Bu kod (**Alperen Enes Bayar**) tarafından yazılmıştır.
 ```bash
 pip install requests
 
-# 1. İndeks oluşturma
 python mevzuat_indirici.py index --out ./mevzuat_arsiv --page-size 100 --delay 1.0
 
-# 2. HTML ve PDF indirme
 python mevzuat_indirici.py fetch --out ./mevzuat_arsiv --workers 2 --delay 1.0
 
-# Sadece HTML veya PDF indirmek için:
 python mevzuat_indirici.py fetch --out ./mevzuat_arsiv --only html
 python mevzuat_indirici.py fetch --out ./mevzuat_arsiv --only pdf
 
-# 3. Durum kontrolü
 python mevzuat_indirici.py status --out ./mevzuat_arsiv
 ```

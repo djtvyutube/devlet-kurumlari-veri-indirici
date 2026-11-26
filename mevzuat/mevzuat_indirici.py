@@ -34,9 +34,6 @@ UA = "Mozilla/5.0 (X11; Linux x86_64) RIP-tokenizer-research"
 INTERMEDIATE_URL = "http://cacerts.digicert.com/GeoTrustTLSRSACAG1.crt"
 SYSTEM_CA = "/etc/ssl/certs/ca-certificates.crt"
 
-# Liste API'sinin kabul ettiği tür adları. TumYonetmelik diğer yönetmelik
-# türleriyle örtüşüyor; doc_id ile tekilleştiriyoruz.
-# CumhurbaskanligiKararnameleriFihristi bilerek yok: tüm Resmî Gazete sayısı PDF'leri.
 TYPES = [
     "Kanun",
     "MulgaKanun",
@@ -52,7 +49,6 @@ TYPES = [
     "CumhurbaskanligiGenelgeleri",
 ]
 
-# Bu türlerin dosyaları /MevzuatMetin/yonetmelik/ altında.
 YONETMELIK_DIR_TURS = {7, 9}
 
 _tls = threading.local()
@@ -100,13 +96,9 @@ def request(ca, method, url, retries=5, **kw):
     raise RuntimeError(f"failed after {retries} retries: {url}")
 
 
-# ---------------------------------------------------------------- index
-
-
 def doc_id(row) -> str:
     tur, tertip, no = row["mevzuatTur"], row["mevzuatTertip"], row["mevzuatNo"]
     if row.get("fileType") == 2:
-        # Genelge numaraları yıllara göre tekrar ediyor; PDF adını kullan.
         stem = row["url"].rsplit("/", 1)[-1].rsplit(".", 1)[0]
         return f"{tur}.{stem}"
     return f"{tur}.{tertip}.{no}"
@@ -125,7 +117,6 @@ def list_page(ca, tur_name, start, length):
             "GenelArama": False,
         },
     }
-    # Sunucu ara sıra 200 ile JSON olmayan bir sayfa döndürüyor (hız sınırı?).
     for attempt in range(6):
         r = request(ca, "POST", f"{BASE}/anasayfa/MevzuatDatatable", json=payload)
         try:
@@ -149,7 +140,7 @@ def cmd_index(args):
             seen = {json.loads(l)["doc_id"] for l in f}
     log(f"index: {len(seen)} kayıt zaten manifest'te")
 
-    session(ca).get(BASE + "/", timeout=60)  # oturum çerezi
+    session(ca).get(BASE + "/", timeout=60)
     with manifest.open("a") as f:
         for tur_name in TYPES:
             start, new, total = 0, 0, None
@@ -173,9 +164,6 @@ def cmd_index(args):
                 time.sleep(args.delay)
             log(f"index: {tur_name:45s} toplam={total:>6} yeni={new}")
     log(f"index bitti: {len(seen)} tekil belge -> {manifest}")
-
-
-# ---------------------------------------------------------------- fetch
 
 
 def targets(row):
@@ -285,9 +273,6 @@ def cmd_fetch(args):
                     f"missing={stats['missing']} not_pdf={stats['not_pdf']} error={stats['error']}  "
                     f"{stats['bytes'] / 1e9:.2f} GB  ETA {eta / 3600:.1f} sa")
     log(f"fetch bitti: {stats}")
-
-
-# ---------------------------------------------------------------- status
 
 
 def cmd_status(args):

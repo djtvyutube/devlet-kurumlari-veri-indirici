@@ -18,13 +18,10 @@ Anayasa Mahkemesi Kararlar Bilgi Bankası API'sini (`https://kararlarbilgibankas
 ```bash
 pip install requests urllib3
 
-# Varsayılan ayarlarla günlük taramayı başlatma (Bugünden 1962-01-01'e kadar)
 python aym_indirici.py
 
-# Belirli tarih aralığı, klasör ve limit belirterek çalıştırma
 python aym_indirici.py --start 2023-01-01 --end 2024-01-01 --output aym_2023 --delay 0.15 --limit 500
 
-# Hata veren kararları tekrar deneme
 python aym_hatali_indirici.py --output aymjson --delay 0.15
 ```
 

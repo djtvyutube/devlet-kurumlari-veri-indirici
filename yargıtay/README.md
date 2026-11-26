@@ -14,10 +14,8 @@ Yargıtay Karar Arama REST API'sini (`karararama-services.yargitay.gov.tr`) kull
 ```bash
 pip install requests urllib3
 
-# Varsayılan (Bugünden 1970-01-01'e kadar)
 python yargitay_indirici.py
 
-# Tarih aralığı, limit ve klasör belirterek
 python yargitay_indirici.py --start 2023-01-01 --end 2023-12-31 --delay 0.25 --page-size 100 --limit 1000 --output yargitay_2023
 ```
 

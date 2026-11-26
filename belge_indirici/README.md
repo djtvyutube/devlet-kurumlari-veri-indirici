@@ -15,10 +15,8 @@ Sayıştay ve benzeri kamu kurumlarının web sitelerindeki rapor kategorilerini
 ```bash
 pip install selenium
 
-# Tek kategori indirme
 python dosya_indirici.py -u https://www.sayistay.gov.tr/reports/category/13-faaliyet-genel-degerlendirme-raporlari -s 2 -o faaliyet_raporlari
 
-# Birden fazla kategori indirme
 python dosya_indirici.py -u URL1 URL2 -s 3 -o indirilen_pdfler
 ```
 

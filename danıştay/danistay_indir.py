@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 Danıştay Karar İndirici (UYAP / Bedesten API)
 

@@ -243,7 +243,6 @@ class AnayasaMahkemesiScraper:
         current_date = datetime.strptime(baslangic_tarihi_str, "%Y-%m-%d")
         end_date = datetime.strptime(bitis_tarihi_str, "%Y-%m-%d")
 
-        # Kullanıcı --start (eski) ve --end (yeni) şeklinde girdiyse sıralamayı düzelt
         if current_date < end_date:
             current_date, end_date = end_date, current_date
 

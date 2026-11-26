@@ -68,3 +68,7 @@ python aym_hatali_indirici.py --output aymjson --delay 0.15
 - `kararTipi`: Karar kategorisini belirtir (`"BireyselBasvuru"`, `"NormDenetimi"`, `"YuceDivan"` vb.).
 - `kararTuruDosyaSonucuLabel` ve `basvuruTuru`: Norm denetimi kararlarında dosya sonucu (İptal, Ret vb.) ve başvuru türünü tutar.
 - `gizlilik`: `true` olduğunda karardaki kişisel bilgiler anonimleştirilmiştir.
+
+## Yasal Uyarı ve Sorumluluk Reddi
+
+Bu yazılım yalnızca eğitim, akademik araştırma ve kişisel arşivleme amaçlarıyla geliştirilmiştir. Anayasa Mahkemesi ile herhangi bir resmi bağı yoktur. Kamuya açık verilerin indirilmesi, saklanması ve işlenmesi süreçlerinde ilgili kurumun kullanım koşullarına, KVKK hükümlerine ve yürürlükteki mevzuata uyulması tamamen kullanıcının sorumluluğundadır. Kurum sunucularına aşırı yük bindirmemek için istek gecikme sürelerine (`--delay`) dikkat edilmelidir. Geliştirici, yazılımın kullanımından doğabilecek hiçbir hukuki, idari, cezai veya teknik sonuçtan sorumlu tutulamaz.

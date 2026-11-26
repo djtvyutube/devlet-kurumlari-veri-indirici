@@ -24,3 +24,7 @@ python mevzuat_indirici.py fetch --out ./mevzuat_arsiv --only pdf
 
 python mevzuat_indirici.py status --out ./mevzuat_arsiv
 ```
+
+## Yasal Uyarı ve Sorumluluk Reddi
+
+Bu yazılım yalnızca eğitim, akademik araştırma ve kişisel arşivleme amaçlarıyla paylaşılmıştır. Cumhurbaşkanlığı Mevzuat Bilgi Sistemi (`mevzuat.gov.tr`) ile herhangi bir resmi bağı yoktur. Kamuya açık mevzuat metinlerinin indirilmesi ve kullanılması süreçlerinde ilgili kurumun kullanım koşullarına ve yürürlükteki mevzuata uyulması tamamen kullanıcının sorumluluğundadır. Kurum sunucularına aşırı yük bindirmemek için istek gecikme sürelerine (`--delay`) ve iş parçacığı sayısına (`--workers`) dikkat edilmelidir. Geliştiriciler, yazılımın kullanımından doğabilecek hiçbir hukuki, idari, cezai veya teknik sonuçtan sorumlu tutulamaz.

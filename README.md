@@ -108,3 +108,9 @@ python belge_indirici/dosya_indirici.py -u https://www.sayistay.gov.tr/reports/c
 | `-u`, `--urls` | *(Zorunlu)* | Taranacak kategori adresleri (boşlukla ayrılmış birden fazla URL verilebilir) |
 | `-s`, `--sayfa` | `1` | Her kategori için taranacak maksimum sayfa sayısı |
 | `-o`, `--cikti` | `indirilen_pdfler` | PDF ve metadata dosyalarının kaydedileceği klasör |
+
+## Yasal Uyarı ve Sorumluluk Reddi
+
+Bu depodaki yazılımlar yalnızca eğitim, akademik araştırma ve kişisel arşivleme amaçlarıyla geliştirilmiştir. İlgili kamu kurumları (Anayasa Mahkemesi, Danıştay, Yargıtay, Sayıştay, Cumhurbaşkanlığı Mevzuat Bilgi Sistemi vb.) ile herhangi bir resmi bağı veya ilişkisi yoktur.
+
+Bu araçlar sadece kamuya açık sistemlerdeki verileri sorgular; herhangi bir erişim kontrolünü, güvenlik duvarını veya doğrulama mekanizmasını aşmaz. Yazılımların kullanımından, hedef sunuculara gönderilen istek sıklığından, ilgili kurumların kullanım koşullarına, 6698 sayılı Kişisel Verilerin Korunması Kanunu (KVKK), 5651 sayılı Kanun ve 5237 sayılı Türk Ceza Kanunu hükümlerine uygun hareket edilmesinden tamamen kullanıcı sorumludur. Geliştiriciler, bu yazılımların doğrudan veya dolaylı kullanımından doğabilecek hiçbir hukuki, idari, cezai veya teknik zarardan sorumlu tutulamaz.

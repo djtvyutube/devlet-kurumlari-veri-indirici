@@ -27,3 +27,7 @@ python dosya_indirici.py -u URL1 URL2 -s 3 -o indirilen_pdfler
 | `-u`, `--urls` | *(Zorunlu)* | Taranacak bir veya birden fazla kategori sayfası adresi (boşlukla ayrılmış) |
 | `-s`, `--sayfa` | `1` | Her kategori için taranacak maksimum sayfa sayısı |
 | `-o`, `--cikti` | `indirilen_pdfler` | PDF ve metadata dosyalarının kaydedileceği klasör |
+
+## Yasal Uyarı ve Sorumluluk Reddi
+
+Bu yazılım yalnızca eğitim, akademik araştırma ve kişisel arşivleme amaçlarıyla geliştirilmiştir. Sayıştay veya diğer kamu kurumları ile herhangi bir resmi bağı yoktur. Kamuya açık belgelerin indirilmesi, saklanması ve kullanılması süreçlerinde ilgili kurumların kullanım koşullarına ve yürürlükteki mevzuata uyulması tamamen kullanıcının sorumluluğundadır. Geliştirici, yazılımın kullanımından doğabilecek hiçbir hukuki, idari, cezai veya teknik sonuçtan sorumlu tutulamaz.

@@ -17,17 +17,20 @@ pip install requests urllib3
 # Varsayılan (Bugünden 1970-01-01'e kadar)
 python yargitay_indirici.py
 
-# Tarih aralığı ve klasör belirterek
-python yargitay_indirici.py --start 2023-01-01 --end 2023-12-31 --delay 0.25 --page-size 100 --output yargitay_2023
+# Tarih aralığı, limit ve klasör belirterek
+python yargitay_indirici.py --start 2023-01-01 --end 2023-12-31 --delay 0.25 --page-size 100 --limit 1000 --output yargitay_2023
 ```
 
 ### Parametreler
 
-- `--output`: Çıktı klasörü (varsayılan: `yargitay_arsiv`)
-- `--start`: En eski tarih (`YYYY-MM-DD`, varsayılan: `1970-01-01`)
-- `--end`: Başlangıç/en yeni tarih (`YYYY-MM-DD`, varsayılan: Bugün)
-- `--delay`: İstekler arası bekleme süresi (saniye, varsayılan: `0.25`)
-- `--page-size`: Sayfa başına kayıt sayısı (varsayılan: `100`)
+| Parametre | Varsayılan | Açıklama |
+| :--- | :--- | :--- |
+| `--output`, `--dir` | `yargitay_arsiv` | Kararların ve `archive_state.db` veritabanının kaydedileceği klasör |
+| `--start` | `1970-01-01` | En eski tarih (`YYYY-MM-DD`) |
+| `--end` | Bugün | Başlangıç / en yeni tarih (`YYYY-MM-DD`) |
+| `--limit` | Sınırsız | Maksimum indirilecek toplam karar sayısı |
+| `--delay` | `0.25` | İstekler arası bekleme süresi (saniye) |
+| `--page-size` | `100` | Sayfa başına kayıt sayısı (en fazla 100) |
 
 ## Çıktı Örneği
 

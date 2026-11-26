@@ -5,6 +5,7 @@ ilerleme_durumu.json içindeki hatali_idler listesinde kalan kararları
 yeniden sorgular ve inenleri ilgili Yıl/Ay/Gün klasörüne ham JSON olarak kaydeder.
 """
 
+import argparse
 import os
 import sys
 import time
@@ -19,8 +20,14 @@ from urllib3.util.retry import Retry
 
 
 class AnayasaMahkemesiHataliIndirici:
-    def __init__(self, root_output_dir="aymjson"):
-        self.root_output_dir = os.path.abspath(root_output_dir)
+    def __init__(self, root_output_dir="aymjson", delay=0.15):
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        if not os.path.isabs(root_output_dir):
+            self.root_output_dir = os.path.abspath(os.path.join(script_dir, root_output_dir))
+        else:
+            self.root_output_dir = os.path.abspath(root_output_dir)
+
+        self.delay = delay
         self.ilerleme_dosyasi = os.path.join(self.root_output_dir, "ilerleme_durumu.json")
         self.api_url = "https://kararlarbilgibankasi.anayasa.gov.tr/api/core/public/search"
 
@@ -206,7 +213,7 @@ class AnayasaMahkemesiHataliIndirici:
 
         return None
 
-    def hatali_kararlari_indir(self):
+    def hatali_kararlari_indir(self, max_karar=None):
         if not self.ilerleme_oku():
             return
 
@@ -215,6 +222,8 @@ class AnayasaMahkemesiHataliIndirici:
             return
 
         aranacak_idler = list(self.hatali_idler)
+        if max_karar:
+            aranacak_idler = aranacak_idler[:max_karar]
         toplam_hatali = len(aranacak_idler)
         self.log_yaz(f"[*] Toplam {toplam_hatali} adet hatalı/eksik karar ID'si yeniden indiriliyor...")
 
@@ -257,7 +266,10 @@ class AnayasaMahkemesiHataliIndirici:
                 self.ilerleme_kaydet()
 
                 print(f"  [+] Kurtarıldı: ID: {gercek_id} -> {yil}/{ay}/{gun}/{dosya_adi}")
-                time.sleep(random.uniform(0.1, 0.25))
+                if self.delay > 0:
+                    time.sleep(self.delay)
+                else:
+                    time.sleep(random.uniform(0.1, 0.25))
 
             self.log_yaz(
                 f"[BİLGİ] İşlem tamamlandı. Kurtarılan: {kurtarilan_sayisi} | "
@@ -270,11 +282,16 @@ class AnayasaMahkemesiHataliIndirici:
 
 
 if __name__ == "__main__":
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    output_dir = os.path.join(base_dir, "aymjson")
-    kurtarici = AnayasaMahkemesiHataliIndirici(root_output_dir=output_dir)
+    parser = argparse.ArgumentParser(description="Anayasa Mahkemesi Hatalı / Eksik Karar İndirici")
+    parser.add_argument("--output", "--dir", dest="output", default="aymjson", help="Çıktı klasörü (varsayılan: aymjson)")
+    parser.add_argument("--limit", type=int, default=None, help="Maksimum denenecek hatalı karar sayısı")
+    parser.add_argument("--delay", type=float, default=0.15, help="İstekler arası bekleme süresi (saniye, varsayılan: 0.15)")
+
+    args = parser.parse_args()
+
+    kurtarici = AnayasaMahkemesiHataliIndirici(root_output_dir=args.output, delay=args.delay)
     try:
-        kurtarici.hatali_kararlari_indir()
+        kurtarici.hatali_kararlari_indir(max_karar=args.limit)
     except KeyboardInterrupt:
         kurtarici.ilerleme_kaydet()
         sys.exit(0)

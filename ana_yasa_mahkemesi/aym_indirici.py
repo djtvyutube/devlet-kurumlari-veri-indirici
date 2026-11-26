@@ -5,6 +5,7 @@ Kararlar Bilgi Bankası API'sini gün bazında tarar ve dönen yanıtları
 değiştirmeden ham JSON olarak Yıl/Ay/Gün klasör yapısında diske kaydeder.
 """
 
+import argparse
 import os
 import sys
 import time
@@ -19,12 +20,19 @@ from urllib3.util.retry import Retry
 
 
 class AnayasaMahkemesiScraper:
-    def __init__(self, root_output_dir="aymjson"):
-        self.root_output_dir = os.path.abspath(root_output_dir)
+    def __init__(self, root_output_dir="aymjson", delay=0.1, page_size=50):
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        if not os.path.isabs(root_output_dir):
+            self.root_output_dir = os.path.abspath(os.path.join(script_dir, root_output_dir))
+        else:
+            self.root_output_dir = os.path.abspath(root_output_dir)
+
         if not os.path.exists(self.root_output_dir):
             os.makedirs(self.root_output_dir, exist_ok=True)
             print(f"[*] Çıktı klasörü oluşturuldu: {self.root_output_dir}")
 
+        self.delay = delay
+        self.page_size = page_size
         self.ilerleme_dosyasi = os.path.join(self.root_output_dir, "ilerleme_durumu.json")
         self.api_url = "https://kararlarbilgibankasi.anayasa.gov.tr/api/core/public/search"
 
@@ -175,7 +183,7 @@ class AnayasaMahkemesiScraper:
     def gunun_kararlarini_getir(self, tarih_iso):
         tum_kararlar = []
         page = 1
-        page_size = 50
+        page_size = self.page_size
 
         while True:
             payload = {
@@ -220,7 +228,7 @@ class AnayasaMahkemesiScraper:
 
         return self.api_istek_gonder(payload)
 
-    def arsivle(self, baslangic_tarihi_str=None, bitis_tarihi_str="1962-01-01"):
+    def arsivle(self, baslangic_tarihi_str=None, bitis_tarihi_str=None, max_karar=None):
         kayitli_son = self.ilerleme_oku()
         if not baslangic_tarihi_str:
             if kayitli_son:
@@ -229,8 +237,15 @@ class AnayasaMahkemesiScraper:
             else:
                 baslangic_tarihi_str = datetime.now().strftime("%Y-%m-%d")
 
+        if not bitis_tarihi_str:
+            bitis_tarihi_str = "1962-01-01"
+
         current_date = datetime.strptime(baslangic_tarihi_str, "%Y-%m-%d")
         end_date = datetime.strptime(bitis_tarihi_str, "%Y-%m-%d")
+
+        # Kullanıcı --start (eski) ve --end (yeni) şeklinde girdiyse sıralamayı düzelt
+        if current_date < end_date:
+            current_date, end_date = end_date, current_date
 
         self.log_yaz(f"[*] Arşivleme başlatılıyor: {current_date.strftime('%Y-%m-%d')} -> {end_date.strftime('%Y-%m-%d')}")
 
@@ -298,7 +313,15 @@ class AnayasaMahkemesiScraper:
                         self.ilerleme_kaydet(tarih_iso, toplam_indirilen)
 
                         print(f"  [+] Kaydedildi: {tarih_iso} | ID: {k_id} -> {yil}/{ay}/{gun}/{dosya_adi}")
-                        time.sleep(random.uniform(0.05, 0.15))
+
+                        if max_karar and toplam_indirilen >= max_karar:
+                            self.log_yaz(f"[BİLGİ] Belirtilen indirme limitine ({max_karar}) ulaşıldı.")
+                            return
+
+                        if self.delay > 0:
+                            time.sleep(self.delay)
+                        else:
+                            time.sleep(random.uniform(0.05, 0.15))
 
                     if gunluk_indirilen > 0:
                         self.log_yaz(f"Tamamlandı: {tarih_iso} tarihinden {gunluk_indirilen} karar kaydedildi.")
@@ -316,11 +339,27 @@ class AnayasaMahkemesiScraper:
 
 
 if __name__ == "__main__":
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    output_dir = os.path.join(base_dir, "aymjson")
-    bot = AnayasaMahkemesiScraper(root_output_dir=output_dir)
+    parser = argparse.ArgumentParser(description="Anayasa Mahkemesi Karar İndirici")
+    parser.add_argument("--output", "--dir", dest="output", default="aymjson", help="Çıktı klasörü (varsayılan: aymjson)")
+    parser.add_argument("--start", default=None, help="En eski tarih (YYYY-MM-DD, varsayılan: 1962-01-01)")
+    parser.add_argument("--end", default=None, help="Başlangıç/en yeni tarih (YYYY-MM-DD, varsayılan: Bugün veya son kalınan tarih)")
+    parser.add_argument("--limit", type=int, default=None, help="Maksimum indirilecek karar sayısı")
+    parser.add_argument("--delay", type=float, default=0.1, help="İstekler arası bekleme süresi (saniye, varsayılan: 0.1)")
+    parser.add_argument("--page-size", type=int, default=50, help="Sayfa başına kayıt sayısı (varsayılan: 50)")
+
+    args = parser.parse_args()
+
+    bot = AnayasaMahkemesiScraper(
+        root_output_dir=args.output,
+        delay=args.delay,
+        page_size=args.page_size
+    )
     try:
-        bot.arsivle()
+        bot.arsivle(
+            baslangic_tarihi_str=args.end,
+            bitis_tarihi_str=args.start,
+            max_karar=args.limit
+        )
     except KeyboardInterrupt:
         bot.ilerleme_kaydet(bot.aktif_tarih or datetime.now().strftime("%Y-%m-%d"))
         sys.exit(0)

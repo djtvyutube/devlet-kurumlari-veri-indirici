@@ -504,11 +504,12 @@ class DanistayScraper2:
 
 def main():
     parser = argparse.ArgumentParser(description="Danıştay Karar İndirici")
-    parser.add_argument("--start", type=str, help="Başlangıç tarihi (YYYY-AA-GG)")
-    parser.add_argument("--end", type=str, help="Bitiş tarihi (YYYY-AA-GG)")
-    parser.add_argument("--limit", type=int, help="Maksimum indirilecek karar sayısı")
-    parser.add_argument("--delay", type=float, default=0.25, help="İstekler arası bekleme (sn)")
-    parser.add_argument("--dir", type=str, default="danistay_arsiv", help="Kayıt klasörü")
+    parser.add_argument("--dir", "--output", dest="dir", type=str, default="danistay_arsiv", help="Kayıt klasörü (varsayılan: danistay_arsiv)")
+    parser.add_argument("--start", type=str, default=None, help="En eski tarih (YYYY-MM-DD, varsayılan: 1970-01-01)")
+    parser.add_argument("--end", type=str, default=None, help="Başlangıç/en yeni tarih (YYYY-MM-DD, varsayılan: Bugün)")
+    parser.add_argument("--limit", type=int, default=None, help="Maksimum indirilecek karar sayısı")
+    parser.add_argument("--delay", type=float, default=0.25, help="İstekler arası bekleme süresi (sn, varsayılan: 0.25)")
+    parser.add_argument("--page-size", type=int, default=100, help="Sayfa başına kayıt sayısı (varsayılan: 100)")
 
     args = parser.parse_args()
 
@@ -516,7 +517,8 @@ def main():
         base_dir=args.dir,
         start_date=args.start,
         end_date=args.end,
-        delay=args.delay
+        delay=args.delay,
+        page_size=args.page_size
     )
 
     try:

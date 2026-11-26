@@ -15,7 +15,7 @@ import sqlite3
 import logging
 import argparse
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 import requests
 import urllib3
 
@@ -342,11 +342,11 @@ class YargitayScraper2:
                     logger.info(f"  [KURTARILDI] Hatalı karar indirildi: {dec_id}")
             time.sleep(self.delay)
 
-    def process_day(self, date_str: str) -> int:
+    def process_day(self, date_str: str, max_karar: Optional[int] = None, current_total: int = 0) -> Tuple[int, bool]:
         first_page = self.fetch_search_page(date_str, page=0)
         if not first_page:
             logger.error(f"Günün ilk sayfası alınamadı: {date_str}")
-            return 0
+            return 0, False
 
         total_elements = first_page.get("totalElements", 0)
         total_pages = first_page.get("totalPages", 0)
@@ -354,7 +354,7 @@ class YargitayScraper2:
         if total_elements == 0:
             logger.info(f"{date_str}: Karar bulunamadı.")
             self.mark_day_completed(date_str, 0)
-            return 0
+            return 0, False
 
         logger.info(f"{date_str}: Toplam {total_elements} karar ({total_pages} sayfa) bulundu. İndiriliyor...")
 
@@ -403,6 +403,12 @@ class YargitayScraper2:
                     saved_count += 1
                     logger.info(f"  [{overall_idx}/{total_elements}] Karar kaydedildi: {dec_id}")
 
+                if max_karar and (current_total + saved_count) >= max_karar:
+                    logger.info(f"Belirtilen indirme limitine ({max_karar}) ulaşıldı.")
+                    if not has_any_failure and overall_idx >= total_elements:
+                        self.mark_day_completed(date_str, saved_count)
+                    return saved_count, True
+
                 if self.delay > 0:
                     time.sleep(self.delay)
 
@@ -414,9 +420,9 @@ class YargitayScraper2:
         else:
             logger.warning(f"{date_str} bazı hatalarla bitti. Tekrar çalıştırıldığında eksikler tamamlanacak.")
 
-        return saved_count
+        return saved_count, False
 
-    def run(self):
+    def run(self, max_karar: Optional[int] = None):
         logger.info("=" * 60)
         logger.info("Yargıtay Karar İndirici Başlatılıyor")
         logger.info(f"Tarih Aralığı: {self.end_date.strftime('%Y-%m-%d')} -> {self.start_date.strftime('%Y-%m-%d')}")
@@ -428,6 +434,7 @@ class YargitayScraper2:
         current_dt = self.end_date
         total_days = (self.end_date - self.start_date).days + 1
         day_idx = 0
+        total_downloaded = 0
 
         while current_dt >= self.start_date:
             day_idx += 1
@@ -440,7 +447,10 @@ class YargitayScraper2:
 
             logger.info(f"\n--- [{day_idx}/{total_days}] Gün İşleniyor: {date_str} ---")
             try:
-                self.process_day(date_str)
+                saved_in_day, limit_reached = self.process_day(date_str, max_karar=max_karar, current_total=total_downloaded)
+                total_downloaded += saved_in_day
+                if limit_reached:
+                    break
             except KeyboardInterrupt:
                 logger.info("\nKullanıcı tarafından durduruldu.")
                 sys.exit(0)
@@ -460,11 +470,12 @@ class YargitayScraper2:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Yargıtay Karar İndirici")
-    parser.add_argument("--output", default="yargitay_arsiv", help="Çıktı klasörü (varsayılan: yargitay_arsiv)")
-    parser.add_argument("--start", default=None, help="Başlangıç tarihi (YYYY-MM-DD, varsayılan: 1970-01-01)")
-    parser.add_argument("--end", default=None, help="Bitiş tarihi (YYYY-MM-DD, varsayılan: Bugün)")
-    parser.add_argument("--delay", type=float, default=0.25, help="İstekler arası gecikme (saniye)")
-    parser.add_argument("--page-size", type=int, default=100, help="Sayfa başına kayıt (En fazla 100)")
+    parser.add_argument("--output", "--dir", dest="output", default="yargitay_arsiv", help="Çıktı klasörü (varsayılan: yargitay_arsiv)")
+    parser.add_argument("--start", default=None, help="En eski tarih (YYYY-MM-DD, varsayılan: 1970-01-01)")
+    parser.add_argument("--end", default=None, help="Başlangıç/en yeni tarih (YYYY-MM-DD, varsayılan: Bugün)")
+    parser.add_argument("--limit", type=int, default=None, help="Maksimum indirilecek karar sayısı")
+    parser.add_argument("--delay", type=float, default=0.25, help="İstekler arası gecikme (saniye, varsayılan: 0.25)")
+    parser.add_argument("--page-size", type=int, default=100, help="Sayfa başına kayıt (En fazla 100, varsayılan: 100)")
 
     args = parser.parse_args()
 
@@ -475,4 +486,4 @@ if __name__ == "__main__":
         delay=args.delay,
         page_size=args.page_size
     )
-    scraper.run()
+    scraper.run(max_karar=args.limit)

@@ -18,12 +18,34 @@ Anayasa Mahkemesi Kararlar Bilgi Bankası API'sini (`https://kararlarbilgibankas
 ```bash
 pip install requests urllib3
 
-# Günlük taramayı başlatma
+# Varsayılan ayarlarla günlük taramayı başlatma (Bugünden 1962-01-01'e kadar)
 python aym_indirici.py
 
+# Belirli tarih aralığı, klasör ve limit belirterek çalıştırma
+python aym_indirici.py --start 2023-01-01 --end 2024-01-01 --output aym_2023 --delay 0.15 --limit 500
+
 # Hata veren kararları tekrar deneme
-python aym_hatali_indirici.py
+python aym_hatali_indirici.py --output aymjson --delay 0.15
 ```
+
+### Parametreler (`aym_indirici.py`)
+
+| Parametre | Varsayılan | Açıklama |
+| :--- | :--- | :--- |
+| `--output`, `--dir` | `aymjson` | Kararların ve `ilerleme_durumu.json` dosyasının kaydedileceği klasör |
+| `--start` | `1962-01-01` | Arama alt sınır / en eski tarih (`YYYY-MM-DD`) |
+| `--end` | Bugün / Son kalınan tarih | Arama başlangıç / en yeni tarih (`YYYY-MM-DD`) |
+| `--limit` | Sınırsız | Maksimum indirilecek toplam karar sayısı |
+| `--delay` | `0.1` | İstekler arası bekleme süresi (saniye) |
+| `--page-size` | `50` | Sayfa başına çekilecek karar sayısı |
+
+### Parametreler (`aym_hatali_indirici.py`)
+
+| Parametre | Varsayılan | Açıklama |
+| :--- | :--- | :--- |
+| `--output`, `--dir` | `aymjson` | `ilerleme_durumu.json` dosyasının bulunduğu arşiv klasörü |
+| `--limit` | Sınırsız | Tek seferde denenecek maksimum hatalı karar sayısı |
+| `--delay` | `0.15` | İstekler arası bekleme süresi (saniye) |
 
 ## `ilerleme_durumu.json` Yapısı
 

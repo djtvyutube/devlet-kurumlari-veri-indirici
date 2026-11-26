@@ -27,11 +27,14 @@ python danistay_indir.py --limit 500
 
 ### Parametreler
 
-- `--start`: En eski tarih (`YYYY-AA-GG`, varsayılan: `1970-01-01`)
-- `--end`: Başlangıç/en yeni tarih (`YYYY-AA-GG`, varsayılan: Bugün)
-- `--limit`: Maksimum indirilecek karar sayısı
-- `--delay`: İstekler arası bekleme süresi (saniye, varsayılan: `0.25`)
-- `--dir`: Çıktı klasörü (varsayılan: `danistay_arsiv`)
+| Parametre | Varsayılan | Açıklama |
+| :--- | :--- | :--- |
+| `--dir`, `--output` | `danistay_arsiv` | Kararların ve `archive_state.db` veritabanının kaydedileceği klasör |
+| `--start` | `1970-01-01` | En eski tarih (`YYYY-MM-DD`) |
+| `--end` | Bugün | Başlangıç / en yeni tarih (`YYYY-MM-DD`) |
+| `--limit` | Sınırsız | Maksimum indirilecek toplam karar sayısı |
+| `--delay` | `0.25` | İstekler arası bekleme süresi (saniye) |
+| `--page-size` | `100` | Sayfa başına çekilecek kayıt sayısı |
 
 ## Çıktı Örneği
 

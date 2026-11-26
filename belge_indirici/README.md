@@ -24,6 +24,8 @@ python dosya_indirici.py -u URL1 URL2 -s 3 -o indirilen_pdfler
 
 ### Parametreler
 
-- `-u, --urls`: Taranacak kategori adresleri (boşlukla ayrılmış).
-- `-s, --sayfa`: Her kategori için taranacak sayfa sayısı (varsayılan: `1`).
-- `-o, --cikti`: Çıktı klasörü (varsayılan: `indirilen_pdfler`).
+| Parametre | Varsayılan | Açıklama |
+| :--- | :--- | :--- |
+| `-u`, `--urls` | *(Zorunlu)* | Taranacak bir veya birden fazla kategori sayfası adresi (boşlukla ayrılmış) |
+| `-s`, `--sayfa` | `1` | Her kategori için taranacak maksimum sayfa sayısı |
+| `-o`, `--cikti` | `indirilen_pdfler` | PDF ve metadata dosyalarının kaydedileceği klasör |

@@ -30,10 +30,16 @@ archive_state.db-wal
 ilerleme_durumu.json
 ilerleme_durumu.json.tmp
 durum_detay.json
+hata.json
+hata.json.tmp
+idlist.json
+*.corrupt.*
 manifest.jsonl
 fetch_log.jsonl
+index_errors.jsonl
 ca_bundle.pem
 *.part
+*.tmp
 
 .vscode/
 .idea/

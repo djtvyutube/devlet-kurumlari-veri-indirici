@@ -1,8 +1,11 @@
 """
-Anayasa Mahkemesi Hatalı / Eksik Karar İndirici
+Anayasa Mahkemesi Hatalı / Eksik Karar ve Sayfa İndirici
 
-ilerleme_durumu.json içindeki hatali_idler listesinde kalan kararları
-yeniden sorgular ve inenleri ilgili Yıl/Ay/Gün klasörüne ham JSON olarak kaydeder.
+hata.json ve archive_state.db içindeki hatali_kararlar ile hatali_sayfalar
+(ve varsa eski ilerleme_durumu.json içindeki hatali_idler) kayıtlarını yeniden sorgular.
+İnen kararları Yıl/Ay/Gün (veya tarihsiz/) klasörüne kaydedip idlist.json'a ekler ve
+hata kayıtlarından düşer. Yine başarısız olanların hata nedenini, HTTP kodunu ve
+deneme sayısını günceller.
 """
 
 import argparse
@@ -11,274 +14,300 @@ import sys
 import time
 import json
 import random
-import re
-import base64
-from datetime import datetime, timezone
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import sqlite3
+import logging
+from typing import Optional, Dict, Any, List
+from aym_indirici import AnayasaMahkemesiScraper
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S"
+)
+logger = logging.getLogger("AYMHatali")
 
 
-class AnayasaMahkemesiHataliIndirici:
-    def __init__(self, root_output_dir="aymjson", delay=0.15):
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        if not os.path.isabs(root_output_dir):
-            self.root_output_dir = os.path.abspath(os.path.join(script_dir, root_output_dir))
-        else:
-            self.root_output_dir = os.path.abspath(root_output_dir)
+class AnayasaMahkemesiHataliIndirici(AnayasaMahkemesiScraper):
+    def __init__(self, root_output_dir: str = "aymjson", delay: float = 0.15, page_size: int = 50):
+        super().__init__(root_output_dir=root_output_dir, delay=delay, page_size=page_size)
 
-        self.delay = delay
-        self.ilerleme_dosyasi = os.path.join(self.root_output_dir, "ilerleme_durumu.json")
-        self.api_url = "https://kararlarbilgibankasi.anayasa.gov.tr/api/core/public/search"
+    def _collect_failed_decisions(self, include_permanent: bool = False) -> List[Dict[str, Any]]:
+        records_by_id: Dict[str, Dict[str, Any]] = {}
+        skipped_perm = 0
 
-        self.session = self.olustur_oturum()
-        self.mevcut_dosyalar = set()
-        self.ilerleme_verisi = {}
-        self.basarili_idler = []
-        self._basarili_set = set()
-        self.hatali_idler = []
-        self._hatali_set = set()
+        if os.path.exists(self.db_path):
+            with sqlite3.connect(self.db_path) as conn:
+                c = conn.cursor()
+                c.execute("""
+                    SELECT id, karar_tarihi, karar_tipi, arama_kunyesi, http_kodu, kalici_hata, deneme_sayisi
+                    FROM hatali_kararlar
+                    ORDER BY deneme_sayisi ASC
+                """)
+                for dec_id, k_tarihi, k_tip, kunye_str, http_kodu, kalici_hata, deneme_sayisi in c.fetchall():
+                    is_perm = bool(kalici_hata) or (http_kodu == 404)
+                    if is_perm and not include_permanent:
+                        skipped_perm += 1
+                        continue
+                    karar_obj = None
+                    if kunye_str:
+                        try:
+                            karar_obj = json.loads(kunye_str)
+                        except Exception:
+                            karar_obj = None
+                    records_by_id[str(dec_id)] = {
+                        "id": str(dec_id),
+                        "karar_tarihi": k_tarihi or "",
+                        "karar_tipi": k_tip,
+                        "arama_kunyesi": karar_obj,
+                        "deneme_sayisi": deneme_sayisi or 1
+                    }
 
-        self.dosyalar_onbellekle()
-
-    def olustur_oturum(self):
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            ),
-            "Accept": "application/json, text/plain, */*",
-            "Content-Type": "application/json",
-            "Origin": "https://kararlarbilgibankasi.anayasa.gov.tr",
-            "Referer": "https://kararlarbilgibankasi.anayasa.gov.tr/kbb/pages/search/Tumu"
-        })
-
-        retry_strategy = Retry(
-            total=5,
-            backoff_factor=1.5,
-            status_forcelist=[500, 502, 503, 504],
-            allowed_methods=["POST", "GET"]
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=20, pool_maxsize=20)
-        session.mount("https://", adapter)
-        session.mount("http://", adapter)
-        return session
-
-    def log_yaz(self, mesaj):
-        zaman = time.strftime("%H:%M:%S")
-        print(f"[{zaman}] {mesaj}")
-
-    def dosyalar_onbellekle(self):
-        if os.path.exists(self.root_output_dir):
-            for root, dirs, files in os.walk(self.root_output_dir):
-                for file in files:
-                    if file.endswith(".json") and file != "ilerleme_durumu.json":
-                        self.mevcut_dosyalar.add(file)
-
-    def ilerleme_oku(self):
-        if not os.path.exists(self.ilerleme_dosyasi):
-            self.log_yaz(f"[HATA] İlerleme dosyası bulunamadı: {self.ilerleme_dosyasi}")
-            return False
-
-        try:
-            with open(self.ilerleme_dosyasi, "r", encoding="utf-8") as f:
-                self.ilerleme_verisi = json.load(f)
-
-            kayitli_basarililar = self.ilerleme_verisi.get("basarili_idler", [])
-            if isinstance(kayitli_basarililar, list):
-                self.basarili_idler = kayitli_basarililar
-                self._basarili_set = set(kayitli_basarililar)
-
-            kayitli_hatalar = self.ilerleme_verisi.get("hatali_idler", [])
-            if isinstance(kayitli_hatalar, list):
-                self.hatali_idler = list(kayitli_hatalar)
-                self._hatali_set = set(kayitli_hatalar)
-
-            return True
-        except Exception as e:
-            self.log_yaz(f"[HATA] İlerleme dosyası okunamadı: {e}")
-            return False
-
-    def ilerleme_yukle(self):
-        return self.ilerleme_oku()
-
-    def ilerleme_kaydet(self):
-        try:
-            son_tarih = self.ilerleme_verisi.get("son_tarih")
-            guncel_veri = {
-                "son_tarih": son_tarih,
-                "toplam_onbellek_dosya": len(self.mevcut_dosyalar),
-                "basarili_id_sayisi": len(self.basarili_idler),
-                "basarili_idler": self.basarili_idler,
-                "hatali_id_sayisi": len(self.hatali_idler),
-                "hatali_idler": self.hatali_idler,
-                "guncelleme_zamani_utc": datetime.now(timezone.utc).isoformat()
+        hata_data = self._load_hata_json()
+        for dec_id, info in hata_data.get("hatali_kararlar", {}).items():
+            str_id = str(dec_id)
+            if str_id in records_by_id:
+                if not records_by_id[str_id].get("arama_kunyesi") and info.get("arama_kunyesi"):
+                    records_by_id[str_id]["arama_kunyesi"] = info.get("arama_kunyesi")
+                continue
+            http_kodu = info.get("http_kodu")
+            is_perm = bool(info.get("kalici_hata")) or (http_kodu == 404)
+            if is_perm and not include_permanent:
+                skipped_perm += 1
+                continue
+            records_by_id[str_id] = {
+                "id": str_id,
+                "karar_tarihi": info.get("karar_tarihi") or "",
+                "karar_tipi": info.get("karar_tipi"),
+                "arama_kunyesi": info.get("arama_kunyesi"),
+                "deneme_sayisi": info.get("deneme_sayisi", 1)
             }
-            gecici_dosya = f"{self.ilerleme_dosyasi}.tmp"
-            with open(gecici_dosya, "w", encoding="utf-8") as f:
-                json.dump(guncel_veri, f, ensure_ascii=False, indent=4)
-            os.replace(gecici_dosya, self.ilerleme_dosyasi)
-        except Exception as e:
-            self.log_yaz(f"[HATA] İlerleme dosyası güncellenemedi: {e}")
 
-    def temizle_id_degeri(self, raw_id):
-        if not raw_id:
-            return ""
-        str_id = str(raw_id).strip()
+        if skipped_perm > 0:
+            logger.info(
+                f"Kalıcı hata (HTTP 404 veya total:0) olarak işaretlenmiş {skipped_perm} adet karar atlandı "
+                f"(Tekrar denemek için --include-permanent parametresini kullanabilirsiniz)."
+            )
 
-        if str_id.startswith("a2Ji") or str_id.startswith("kbb:"):
-            try:
-                padding = 4 - (len(str_id) % 4)
-                if padding < 4:
-                    str_id_padded = str_id + ("=" * padding)
-                else:
-                    str_id_padded = str_id
+        return list(records_by_id.values())
 
-                decoded = base64.b64decode(str_id_padded).decode("utf-8", errors="ignore")
-                if ":" in decoded:
-                    parts = decoded.split(":")
-                    if len(parts) > 1 and parts[1]:
-                        str_id = parts[1]
-                else:
-                    str_id = decoded
-            except Exception:
-                pass
+    def _collect_failed_pages(self) -> List[Dict[str, Any]]:
+        pages_by_key: Dict[str, Dict[str, Any]] = {}
 
-        temiz = re.sub(r'[\\/*?:"<>| ]', "_", str_id)
-        return temiz
+        if os.path.exists(self.db_path):
+            with sqlite3.connect(self.db_path) as conn:
+                c = conn.cursor()
+                c.execute("SELECT tarih, sayfa, deneme_sayisi FROM hatali_sayfalar ORDER BY tarih DESC, sayfa ASC")
+                for tarih, sayfa, deneme_sayisi in c.fetchall():
+                    key = f"{tarih}_sayfa_{sayfa}"
+                    pages_by_key[key] = {"tarih": tarih, "sayfa": int(sayfa), "deneme_sayisi": deneme_sayisi or 1}
 
-    def dosya_adi_olustur(self, kimlik_degeri):
-        temiz = self.temizle_id_degeri(kimlik_degeri)
-        return f"karar_{temiz}.json"
+        hata_data = self._load_hata_json()
+        for key, info in hata_data.get("hatali_sayfalar", {}).items():
+            tarih = info.get("tarih")
+            sayfa = info.get("sayfa")
+            if tarih and sayfa is not None:
+                k = f"{tarih}_sayfa_{int(sayfa)}"
+                if k not in pages_by_key:
+                    pages_by_key[k] = {
+                        "tarih": tarih,
+                        "sayfa": int(sayfa),
+                        "deneme_sayisi": info.get("deneme_sayisi", 1)
+                    }
 
-    def tarih_ayristir(self, item, raw_id):
-        olasi_alanlar = ["kararTarihi", "kararTarih", "basvuruTarihi", "resmiGazeteTarihi", "tarih"]
-        tarih_degeri = None
+        return list(pages_by_key.values())
 
-        if isinstance(item, dict):
-            for alan in olasi_alanlar:
-                deger = item.get(alan)
-                if deger and isinstance(deger, str):
-                    tarih_degeri = deger.strip()
-                    break
+    def retry_failed_pages(self, max_karar: Optional[int] = None, current_saved: int = 0) -> int:
+        failed_pages = self._collect_failed_pages()
+        if not failed_pages:
+            logger.info("Hatalı arama sayfası kaydı bulunmuyor.")
+            return 0
 
-        if tarih_degeri:
-            iso_eslesme = re.match(r"^(\d{4})-(\d{2})-(\d{2})", tarih_degeri)
-            if iso_eslesme:
-                return iso_eslesme.group(1), iso_eslesme.group(2), iso_eslesme.group(3)
+        logger.info(f"Toplam {len(failed_pages)} adet hatalı arama sayfası yeniden deneniyor...")
+        saved_from_pages = 0
 
-            tr_eslesme = re.match(r"^(\d{2})[./](\d{2})[./](\d{4})", tarih_degeri)
-            if tr_eslesme:
-                return tr_eslesme.group(3), tr_eslesme.group(2), tr_eslesme.group(1)
+        for idx, item in enumerate(failed_pages, start=1):
+            tarih_iso = item["tarih"]
+            page = item["sayfa"]
+            onceki_deneme = item.get("deneme_sayisi", 1)
 
-        return "kurtarilan_kararlar", "tarihsiz", self.temizle_id_degeri(raw_id)[:2] or "00"
+            logger.info(f"[Sayfa {idx}/{len(failed_pages)}] Sorgulanıyor: {tarih_iso} - Sayfa {page} (Önceki deneme: {onceki_deneme})")
+            payload = {
+                "kararTarihiStart": tarih_iso,
+                "kararTarihiEnd": tarih_iso,
+                "page": page,
+                "size": self.page_size
+            }
+            ok, sonuc, page_err = self.api_istek_gonder(payload, max_deneme=5)
+            if not ok or not sonuc:
+                logger.error(
+                    f"[HATA] {tarih_iso} - Sayfa {page} yine alınamadı (Deneme #{onceki_deneme + 1})! "
+                    f"Hata: {page_err.get('error_msg')} | HTTP: {page_err.get('status_code')} | "
+                    f"Yanıt: {page_err.get('response_text')}"
+                )
+                self.record_failed_search_page(tarih_iso, page, page_err)
+                continue
 
-    def api_istek_gonder(self, payload, max_deneme=5):
-        deneme = 0
-        while deneme < max_deneme:
-            deneme += 1
-            try:
-                response = self.session.post(self.api_url, json=payload, timeout=20)
-                if response.status_code == 200:
-                    return response.json()
-                elif response.status_code == 429:
-                    bekleme = 15 * deneme
-                    self.log_yaz(f"[UYARI] İstek sınırı (429) aşıldı. {bekleme} saniye bekleniyor... (Deneme {deneme}/{max_deneme})")
-                    time.sleep(bekleme)
-                else:
-                    self.log_yaz(f"[UYARI] Sunucu {response.status_code} yanıtı döndü. 5 saniye bekleniyor...")
-                    time.sleep(5)
-            except requests.exceptions.RequestException as e:
-                self.log_yaz(f"[HATA] Bağlantı hatası: {e}. {3 * deneme} saniye sonra tekrar denenecek.")
-                time.sleep(3 * deneme)
+            self.remove_failed_search_page(tarih_iso, page)
+            data_list = sonuc.get("data", [])
+            total = sonuc.get("total", 0)
+            logger.info(f"  [+] {tarih_iso} - Sayfa {page} alındı ({len(data_list)} karar, Gün toplamı: {total}).")
 
-        return None
+            if page == 1 and total > self.page_size:
+                total_pages = (total + self.page_size - 1) // self.page_size
+                existing_keys = {(p["tarih"], p["sayfa"]) for p in failed_pages}
+                for next_p in range(2, total_pages + 1):
+                    if (tarih_iso, next_p) not in existing_keys:
+                        failed_pages.append({"tarih": tarih_iso, "sayfa": next_p, "deneme_sayisi": 0})
+                        existing_keys.add((tarih_iso, next_p))
 
-    def karar_detay_getir(self, doc_id):
-        clean_id = self.temizle_id_degeri(doc_id) if doc_id else doc_id
-        payload = {
-            "id": clean_id,
-            "size": 1
+            for karar in data_list:
+                k_id = str(karar.get("id") or "")
+                if not k_id:
+                    continue
+                k_tip = karar.get("kararTipi")
+                dosya_adi = self.dosya_adi_olustur(k_id)
+                clean_id = self.temizle_id_degeri(k_id)
+
+                if k_id in self.downloaded_ids or clean_id in self.downloaded_ids or dosya_adi in self.mevcut_dosyalar:
+                    self.remove_failed_decision(k_id)
+                    continue
+
+                detay_ok, detay_yanit, detay_err = self.karar_detay_getir(k_id, k_tip)
+                if not detay_ok or not detay_yanit:
+                    logger.error(
+                        f"  [HATA] Karar detayı alınamadı (ID: {k_id}) | "
+                        f"Hata: {detay_err.get('error_msg')} | HTTP: {detay_err.get('status_code')} | "
+                        f"Yanıt: {detay_err.get('response_text')}"
+                    )
+                    self.record_failed_decision(k_id, tarih_iso, detay_err, karar_obj=karar, karar_tipi=k_tip)
+                    continue
+
+                rel_path, _ = self.save_decision_file(
+                    detay_yanit,
+                    raw_id=k_id,
+                    fallback_date_str=tarih_iso,
+                    karar_obj=karar
+                )
+                saved_from_pages += 1
+                logger.info(f"  [+] Kurtarıldı (Sayfadan): ID {k_id} -> {rel_path}")
+
+                if max_karar and (current_saved + saved_from_pages) >= max_karar:
+                    logger.info(f"Belirtilen indirme limitine ({max_karar}) ulaşıldı.")
+                    return saved_from_pages
+
+                if self.delay > 0:
+                    time.sleep(self.delay)
+
+        return saved_from_pages
+
+    def _reconcile_incomplete_days(self):
+        hata_data = self._load_hata_json()
+        eksik_gunler = dict(hata_data.get("eksik_gunler", {}))
+        if not eksik_gunler:
+            return
+
+        kalan_sayfa_tarihleri = {
+            info.get("tarih") for info in hata_data.get("hatali_sayfalar", {}).values() if isinstance(info, dict)
         }
-        yanit = self.api_istek_gonder(payload)
-        if yanit and isinstance(yanit, dict) and yanit.get("data"):
-            return yanit
+        kalan_karar_tarihleri = {
+            info.get("karar_tarihi") for info in hata_data.get("hatali_kararlar", {}).values() if isinstance(info, dict)
+        }
 
-        if doc_id != clean_id:
-            payload["id"] = doc_id
-            yanit = self.api_istek_gonder(payload)
-            if yanit and isinstance(yanit, dict) and yanit.get("data"):
-                return yanit
+        if os.path.exists(self.db_path):
+            with sqlite3.connect(self.db_path) as conn:
+                c = conn.cursor()
+                c.execute("SELECT DISTINCT tarih FROM hatali_sayfalar")
+                kalan_sayfa_tarihleri.update(r[0] for r in c.fetchall() if r[0])
+                c.execute("SELECT DISTINCT karar_tarihi FROM hatali_kararlar WHERE kalici_hata = 0")
+                kalan_karar_tarihleri.update(r[0] for r in c.fetchall() if r[0])
 
-        return None
+        for tarih_str, gun_info in eksik_gunler.items():
+            if tarih_str not in kalan_sayfa_tarihleri and tarih_str not in kalan_karar_tarihleri:
+                beklenen = gun_info.get("beklenen_toplam") or gun_info.get("islenen_karar") or 0
+                if beklenen > 0:
+                    self.mark_day_completed(tarih_str, beklenen)
+                    logger.info(f"  [+] Eksik gün tüm hataları giderildiği için tamamlandı işaretlendi: {tarih_str}")
 
-    def hatali_kararlari_indir(self, max_karar=None):
-        if not self.ilerleme_oku():
+    def hatali_kararlari_indir(self, max_karar: Optional[int] = None, include_permanent: bool = False):
+        logger.info("=" * 70)
+        logger.info("Anayasa Mahkemesi Hatalı Karar ve Sayfa İndirici Başlatıldı")
+        logger.info(f"Hedef Arşiv: {self.root_output_dir}")
+        logger.info(f"Hata Dosyası: {self.hata_json_path} | ID Listesi: {self.idlist_path}")
+        logger.info("=" * 70)
+
+        kurtarilan_sayisi = self.retry_failed_pages(max_karar=max_karar, current_saved=0)
+        if max_karar and kurtarilan_sayisi >= max_karar:
             return
 
-        if not self.hatali_idler:
-            self.log_yaz("[BİLGİ] 'ilerleme_durumu.json' içinde hatalı/eksik ID bulunmuyor.")
+        aranacak_kayitlar = self._collect_failed_decisions(include_permanent=include_permanent)
+        if not aranacak_kayitlar:
+            self._reconcile_incomplete_days()
+            logger.info("[BİLGİ] Yeniden denenecek hatalı/eksik karar ID'si bulunmuyor.")
             return
 
-        aranacak_idler = list(self.hatali_idler)
         if max_karar:
-            aranacak_idler = aranacak_idler[:max_karar]
-        toplam_hatali = len(aranacak_idler)
-        self.log_yaz(f"[*] Toplam {toplam_hatali} adet hatalı/eksik karar ID'si yeniden indiriliyor...")
+            kalan = max(0, max_karar - kurtarilan_sayisi)
+            aranacak_kayitlar = aranacak_kayitlar[:kalan]
 
-        kurtarilan_sayisi = 0
+        toplam_hatali = len(aranacak_kayitlar)
+        logger.info(f"[*] Toplam {toplam_hatali} adet hatalı/eksik karar ID'si yeniden indiriliyor...")
+
         hala_hatali_sayisi = 0
 
         try:
-            for sira, k_id in enumerate(aranacak_idler, start=1):
-                self.log_yaz(f"[{sira}/{toplam_hatali}] Sorgulanıyor: ID {k_id}")
-                detay_yanit = self.karar_detay_getir(k_id)
+            for sira, item in enumerate(aranacak_kayitlar, start=1):
+                k_id = str(item["id"])
+                k_tarihi = item.get("karar_tarihi") or ""
+                k_tip = item.get("karar_tipi")
+                karar_obj = item.get("arama_kunyesi")
+                onceki_deneme = item.get("deneme_sayisi", 1)
 
-                if not detay_yanit or not isinstance(detay_yanit, dict) or not detay_yanit.get("data"):
-                    self.log_yaz(f"  [-] Başarısız: ID {k_id} yine alınamadı.")
-                    hala_hatali_sayisi += 1
+                dosya_adi = self.dosya_adi_olustur(k_id)
+                clean_id = self.temizle_id_degeri(k_id)
+                if k_id in self.downloaded_ids or clean_id in self.downloaded_ids or dosya_adi in self.mevcut_dosyalar:
+                    self.remove_failed_decision(k_id)
+                    logger.info(f"[{sira}/{toplam_hatali}] ID {k_id} zaten arşivde mevcut, hata listesinden silindi.")
                     continue
 
-                detay_data = detay_yanit.get("data")
-                ilk_kayit = detay_data[0] if isinstance(detay_data, list) and len(detay_data) > 0 else {}
+                logger.info(
+                    f"[{sira}/{toplam_hatali}] Sorgulanıyor: ID {k_id} "
+                    f"(Tarih: {k_tarihi or 'tarihsiz'}, Önceki deneme: {onceki_deneme})"
+                )
+                detay_ok, detay_yanit, detay_err = self.karar_detay_getir(k_id, k_tip)
 
-                gercek_id = (ilk_kayit.get("id") or k_id) if isinstance(ilk_kayit, dict) else k_id
+                if not detay_ok or not detay_yanit:
+                    hala_hatali_sayisi += 1
+                    logger.error(
+                        f"  [-] Başarısız (Deneme #{onceki_deneme + 1}): ID {k_id} yine alınamadı! "
+                        f"Hata: {detay_err.get('error_msg')} | HTTP: {detay_err.get('status_code')} | "
+                        f"Yanıt: {detay_err.get('response_text')}"
+                    )
+                    self.record_failed_decision(k_id, k_tarihi, detay_err, karar_obj=karar_obj, karar_tipi=k_tip)
+                    continue
 
-                yil, ay, gun = self.tarih_ayristir(ilk_kayit, gercek_id)
-                dosya_adi = self.dosya_adi_olustur(gercek_id)
-                hedef_klasor = os.path.join(self.root_output_dir, yil, ay, gun)
-                hedef_dosya_yolu = os.path.join(hedef_klasor, dosya_adi)
-
-                os.makedirs(hedef_klasor, exist_ok=True)
-                with open(hedef_dosya_yolu, "w", encoding="utf-8") as f:
-                    json.dump(detay_yanit, f, ensure_ascii=False, indent=4)
-
-                self.mevcut_dosyalar.add(dosya_adi)
-                if k_id in self._hatali_set:
-                    self._hatali_set.discard(k_id)
-                    self.hatali_idler.remove(k_id)
-                if k_id not in self._basarili_set:
-                    self._basarili_set.add(k_id)
-                    self.basarili_idler.append(k_id)
-
+                rel_path, _ = self.save_decision_file(
+                    detay_yanit,
+                    raw_id=k_id,
+                    fallback_date_str=k_tarihi,
+                    karar_obj=karar_obj
+                )
                 kurtarilan_sayisi += 1
-                self.ilerleme_kaydet()
+                logger.info(f"  [+] Kurtarıldı: ID {k_id} -> {rel_path}")
 
-                print(f"  [+] Kurtarıldı: ID: {gercek_id} -> {yil}/{ay}/{gun}/{dosya_adi}")
                 if self.delay > 0:
                     time.sleep(self.delay)
                 else:
                     time.sleep(random.uniform(0.1, 0.25))
 
-            self.log_yaz(
+            self._reconcile_incomplete_days()
+            logger.info("=" * 70)
+            logger.info(
                 f"[BİLGİ] İşlem tamamlandı. Kurtarılan: {kurtarilan_sayisi} | "
-                f"Hala Hatalı: {hala_hatali_sayisi} | Kalan Hatalı ID: {len(self.hatali_idler)}"
+                f"Hala Hatalı: {hala_hatali_sayisi}"
             )
+            logger.info("=" * 70)
         except KeyboardInterrupt:
-            self.log_yaz("[UYARI] Kullanıcı tarafından durduruldu (Ctrl+C). İlerleme durumu kaydediliyor...")
-            self.ilerleme_kaydet()
-            self.log_yaz(f"[*] İlerleme '{self.ilerleme_dosyasi}' dosyasına kaydedildi.")
+            logger.warning("[UYARI] Kullanıcı tarafından durduruldu (Ctrl+C).")
 
 
 if __name__ == "__main__":
@@ -286,12 +315,17 @@ if __name__ == "__main__":
     parser.add_argument("--output", "--dir", dest="output", default="aymjson", help="Çıktı klasörü (varsayılan: aymjson)")
     parser.add_argument("--limit", type=int, default=None, help="Maksimum denenecek hatalı karar sayısı")
     parser.add_argument("--delay", type=float, default=0.15, help="İstekler arası bekleme süresi (saniye, varsayılan: 0.15)")
+    parser.add_argument("--page-size", type=int, default=50, help="Sayfa başına kayıt sayısı (varsayılan: 50)")
+    parser.add_argument("--include-permanent", action="store_true", help="Kalıcı hata (HTTP 404 veya total:0) almış kararları da yeniden dene")
 
     args = parser.parse_args()
 
-    kurtarici = AnayasaMahkemesiHataliIndirici(root_output_dir=args.output, delay=args.delay)
+    kurtarici = AnayasaMahkemesiHataliIndirici(
+        root_output_dir=args.output,
+        delay=args.delay,
+        page_size=args.page_size
+    )
     try:
-        kurtarici.hatali_kararlari_indir(max_karar=args.limit)
+        kurtarici.hatali_kararlari_indir(max_karar=args.limit, include_permanent=args.include_permanent)
     except KeyboardInterrupt:
-        kurtarici.ilerleme_kaydet()
         sys.exit(0)

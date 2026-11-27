@@ -7,8 +7,9 @@ Danıştay Karar Arama portalının kullandığı Bedesten API (`bedesten.adalet
 - **Arama:** `https://bedesten.adalet.gov.tr/emsal-karar/getEmsalKarar` uç noktasına günlük tarih aralığıyla sayfalı `POST` isteği atar.
 - **Detay:** Her kararın `documentId` değeri için `https://bedesten.adalet.gov.tr/emsal-karar/getDocContent` uç noktasını sorgular.
 - **Ham Veri ve Base64 Çözümleme:** API'den gelen arama künyesi ve detay yanıtı filtrelenmeden olduğu gibi kaydedilir. Yalnızca `detay.data.content` içindeki Base64 kodlu karar metni çözülerek `detay.data.content_html` alanına eklenir.
-- **Klasör Yapısı:** `danistay_arsiv/YYYY/AA/GG/karar_{documentId}.json`
-- **Durum Takibi (`archive_state.db`):** İndirilen kararlar, tamamlanan günler ve hata veren kararlar SQLite veritabanında tutulur. Program yeniden başlatıldığında tamamlanan günleri atlar ve hata tablosundaki kararları tekrar dener.
+- **Klasör Yapısı:** `danistay_arsiv/YYYY/AA/GG/karar_{documentId}.json` (Tarihi bilinmeyen/kurtarılan kayıtlar için `danistay_arsiv/tarihsiz/karar_{documentId}.json`)
+- **Durum ve Hata Takibi (`archive_state.db`, `hata.json`, `idlist.json`):** İndirilen kararlar (`idlist.json` içinde kompakt `{"ID":["YYYY-MM-DD HH:MM:SS","konum"]}` formatında), tamamlanan günler, hata veren kararlar (arama künyesi, HTTP kodu, exception, kalıcı hata ayrımı ve deneme sayısıyla), alınamayan arama sayfaları ve eksik kalan günler hem SQLite veritabanında (`archive_state.db`) hem de `hata.json` dosyasında tutulur.
+- **Hatalı Kararları Yeniden İndirme (`danistay_hatali_indir.py`):** Ana tarama scriptinden bağımsız olarak `hata.json` ve veritabanındaki hatalı karar ID'lerini ve arama sayfalarını tekrar dener.
 
 ## Kullanım
 
@@ -20,6 +21,8 @@ python danistay_indir.py
 python danistay_indir.py --start 2024-01-01 --end 2024-12-31 --delay 0.3 --dir danistay_2024
 
 python danistay_indir.py --limit 500
+
+python danistay_hatali_indir.py --dir danistay_arsiv --delay 0.3
 ```
 
 ### Parametreler

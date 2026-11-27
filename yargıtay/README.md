@@ -6,8 +6,9 @@ Yargıtay Karar Arama REST API'sini (`karararama-services.yargitay.gov.tr`) kull
 
 - **Arama:** `https://karararama-services.yargitay.gov.tr/api/kararlar` uç noktasından gün bazında sayfalı (`page`, `size`) karar listesini alır.
 - **Detay:** Her karar için `https://karararama-services.yargitay.gov.tr/api/kararlar/karar/{id}` uç noktasını sorgular.
-- **Ham JSON Kaydı:** Detay API'sinden dönen yanıt filtrelenmeden ve yeni alan eklenmeden olduğu gibi `yargitay_arsiv/YYYY/AA/GG/karar_{id}.json` dosyasına yazılır.
-- **Durum Takibi (`archive_state.db`):** İndirilen kararlar, tamamlanan günler ve hata alınan kararlar SQLite veritabanında tutulur. Kesinti sonrası kaldığı yerden devam eder.
+- **Ham JSON Kaydı:** Detay API'sinden dönen yanıt filtrelenmeden ve yeni alan eklenmeden olduğu gibi `yargitay_arsiv/YYYY/AA/GG/karar_{id}.json` (tarihsiz ise `yargitay_arsiv/tarihsiz/karar_{id}.json`) dosyasına yazılır.
+- **Durum ve Hata Takibi (`archive_state.db`, `hata.json`, `idlist.json`):** İndirilen kararlar (`idlist.json` içinde kompakt `{"ID":["YYYY-MM-DD HH:MM:SS","konum"]}` formatında), tamamlanan günler, hata alınan kararlar (arama künyesi, kalıcı 404 ayrımı ve deneme sayısıyla), alınamayan arama sayfaları ve eksik kalan günler hem SQLite veritabanında (`archive_state.db`) hem de `hata.json` dosyasında HTTP kodu, exception ve yanıt gövdesiyle tutulur.
+- **Hatalı Kararları Yeniden İndirme (`yargitay_hatali_indirici.py`):** Ana tarama scriptinden bağımsız olarak `hata.json` ve veritabanındaki hatalı arama sayfalarını ve karar ID'lerini tekrar dener (kalıcı 404 hatalarını varsayılan olarak atlar).
 
 ## Kullanım
 
@@ -17,6 +18,8 @@ pip install requests urllib3
 python yargitay_indirici.py
 
 python yargitay_indirici.py --start 2023-01-01 --end 2023-12-31 --delay 0.25 --page-size 100 --limit 1000 --output yargitay_2023
+
+python yargitay_hatali_indirici.py --output yargitay_arsiv --delay 0.25
 ```
 
 ### Parametreler

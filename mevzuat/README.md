@@ -6,9 +6,10 @@ Bu kod (**Alperen Enes Bayar**) tarafından yazılmıştır.
 
 ## Aşamalar
 
-1. **`index`**: `MevzuatDatatable` uç noktasından tüm mevzuat türlerini tarar ve `manifest.jsonl` dosyasına yazar.
-2. **`fetch`**: `manifest.jsonl` içindeki kayıtların HTML (`html/{tur}/{doc_id}.html`) ve PDF (`pdf/{tur}/{doc_id}.pdf`) dosyalarını indirir. İndirme kayıtlarını `fetch_log.jsonl` dosyasında tutar.
-3. **`status`**: İndekslenen ve indirilen belgelerin istatistiklerini gösterir.
+1. **`index`**: `MevzuatDatatable` uç noktasından tüm mevzuat türlerini tarar ve `manifest.jsonl` dosyasına yazar. Alınamayan liste sayfaları programı durdurmaz; hata nedenleri ve HTTP kodlarıyla birlikte `hata.json` ve `index_errors.jsonl` dosyalarına kaydedilir.
+2. **`fetch`**: `manifest.jsonl` içindeki kayıtların HTML (`html/{tur}/{doc_id}.html`) ve PDF (`pdf/{tur}/{doc_id}.pdf`) dosyalarını indirir. İndirme sonuçlarını (hata mesajı ve HTTP durum kodu dahil) `fetch_log.jsonl` ve `hata.json` dosyalarında tutar. `not_pdf` ve `error` durumundaki kayıtlar sonraki çalıştırmalarda otomatik olarak yeniden denenir (`--retry-missing` verilirse 404/`missing` olanlar da yeniden denenir).
+3. **`status`**: İndekslenen, indirilen ve `hata.json` içindeki hatalı belgelerin istatistiklerini gösterir.
+4. **`mevzuat_hatali_indirici.py`**: `hata.json` ve `fetch_log.jsonl` içindeki hatalı indeks sayfalarını ve indirilemeyen (`error`, `not_pdf`, opsiyonel olarak `--include-missing` ile `missing`) dosyaları yeniden dener.
 
 ## Kullanım
 
@@ -18,11 +19,14 @@ pip install requests
 python mevzuat_indirici.py index --out ./mevzuat_arsiv --page-size 100 --delay 1.0
 
 python mevzuat_indirici.py fetch --out ./mevzuat_arsiv --workers 2 --delay 1.0
+python mevzuat_indirici.py fetch --out ./mevzuat_arsiv --retry-missing
 
 python mevzuat_indirici.py fetch --out ./mevzuat_arsiv --only html
 python mevzuat_indirici.py fetch --out ./mevzuat_arsiv --only pdf
 
 python mevzuat_indirici.py status --out ./mevzuat_arsiv
+
+python mevzuat_hatali_indirici.py --out ./mevzuat_arsiv --workers 2 --delay 1.0
 ```
 
 ## Yasal Uyarı ve Sorumluluk Reddi

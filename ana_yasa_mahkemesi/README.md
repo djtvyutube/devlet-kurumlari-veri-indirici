@@ -5,13 +5,15 @@ Anayasa Mahkemesi Kararlar Bilgi Bankası API'sini (`https://kararlarbilgibankas
 ## Dosyalar
 
 - `aym_indirici.py`: Belirtilen tarih aralığında (varsayılan: bugünden `1962-01-01` tarihine kadar) geriye doğru tüm günleri tarar.
-- `aym_hatali_indirici.py`: `ilerleme_durumu.json` içindeki `hatali_idler` listesinde biriken indirilememiş kararları tekrar sorgular; inenleri ilgili `Yıl/Ay/Gün` klasörüne kaydedip `basarili_idler` listesine taşır.
+- `aym_hatali_indirici.py`: `hata.json` ve `archive_state.db` içindeki indirilememiş arama sayfalarını ve kararları tekrar sorgular; inenleri ilgili `Yıl/Ay/Gün` (veya `tarihsiz/`) klasörüne kaydedip `idlist.json`'a ekler.
 
 ## Özellikler
 
 - API'den gelen yanıt filtrelenmez, HTML temizliği yapılmaz ve dışarıdan ek alan eklenmez.
-- Kararlar `aymjson/YYYY/AA/GG/karar_{id}.json` yoluna kaydedilir.
-- Kalınan tarih, başarılı ve hatalı karar ID'leri `aymjson/ilerleme_durumu.json` dosyasında tutulur. `Ctrl+C` ile durdurulduğunda mevcut durum kaydedilir.
+- Kararlar `aymjson/YYYY/AA/GG/karar_{id}.json` (tarihsiz ise `aymjson/tarihsiz/karar_{id}.json`) yoluna kaydedilir.
+- **SQLite Durum Takibi (`archive_state.db`):** İndirilen kararlar, tamamlanan günler, hatalı kararlar ve hatalı arama sayfaları veritabanında tutulur. Program yeniden başlatıldığında bugünden geriye doğru tararken daha önce tamamlanmış günleri `O(1)` hızla atlar; böylece yeni yayımlanan kararlar ve eksik kalan günler kaçırılmaz.
+- **Kompakt İndirme Listesi (`idlist.json`):** İndirilen her kararın ID'si, indirme tarihi/saati ve dosya konumu RAM yormadan ve tüm dosyayı baştan yazmadan (`O(1)` dosya sonu ekleme ile) `{"ID":["YYYY-MM-DD HH:MM:SS","YIL/AY/GUN/karar_ID.json"]}` formatında kaydedilir.
+- **Detaylı Hata Kaydı (`hata.json`):** İndirilemeyen kararların arama künyesi (metadata), HTTP durum kodu, exception mesajı, deneme sayısı, kalıcı hata durumu (`404` veya `total: 0`), alınamayan arama sayfaları ve eksik kalan günler `hata.json` dosyasında tutulur.
 
 ## Kullanım
 
@@ -44,22 +46,34 @@ python aym_hatali_indirici.py --output aymjson --delay 0.15
 | `--limit` | Sınırsız | Tek seferde denenecek maksimum hatalı karar sayısı |
 | `--delay` | `0.15` | İstekler arası bekleme süresi (saniye) |
 
-## `ilerleme_durumu.json` Yapısı
+## `idlist.json` ve `hata.json` Yapısı
 
+### `idlist.json` (Kompakt İndirilenler Listesi)
 ```json
 {
-    "son_tarih": "2024-05-10",
-    "toplam_onbellek_dosya": 1520,
-    "basarili_id_sayisi": 1520,
-    "basarili_idler": [
-        "2020/1234",
-        "2021/5678"
-    ],
-    "hatali_id_sayisi": 1,
-    "hatali_idler": [
-        "2019/9999"
-    ],
-    "guncelleme_zamani_utc": "2026-11-25T07:30:00.000000+00:00"
+"2020_1234":["2026-11-26 17:20:05","2024/05/10/karar_2020_1234.json"],
+"2021_5678":["2026-11-26 17:20:06","2024/05/10/karar_2021_5678.json"]
+}
+```
+
+### `hata.json`
+```json
+{
+  "hatali_kararlar": {
+    "2019/9999": {
+      "id": "2019/9999",
+      "karar_tarihi": "2024-05-10",
+      "karar_tipi": "BireyselBasvuru",
+      "arama_kunyesi": { "id": "2019/9999", "kararTarihi": "2024-05-10" },
+      "hata_nedeni": "Sunucu HTTP 503 yanıtı döndü",
+      "http_kodu": 503,
+      "kalici_hata": false,
+      "deneme_sayisi": 2,
+      "son_deneme": "2026-11-26T17:21:00"
+    }
+  },
+  "hatali_sayfalar": {},
+  "eksik_gunler": {}
 }
 ```
 
